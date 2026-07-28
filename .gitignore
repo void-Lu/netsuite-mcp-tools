@@ -4,3 +4,10 @@ docs
 .codex
 .github
 .trellis
+/.netsuite-mcp/
+/.vscode/mcp.json
+/.mcp.json
+out/
+*.vsix
+coverage/
+node_modules/

@@ -1,0 +1,86 @@
+{
+  "name": "netsuite-mcp-tools",
+  "displayName": "NetSuite MCP Tools",
+  "description": "通过本地 OAuth 2.0 JWT 代理将 NetSuite AI Connector 安全接入 VS Code MCP 客户端。",
+  "version": "0.1.0",
+  "publisher": "netsuite-mcp-tools",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://example.invalid/netsuite-mcp-tools"
+  },
+  "engines": {
+    "vscode": "^1.125.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "netsuiteMcp.configureProfile",
+        "title": "NetSuite MCP：配置连接"
+      },
+      {
+        "command": "netsuiteMcp.testConnection",
+        "title": "NetSuite MCP：测试连接"
+      },
+      {
+        "command": "netsuiteMcp.generateClientConfig",
+        "title": "NetSuite MCP：生成 Agent 配置"
+      },
+      {
+        "command": "netsuiteMcp.enableWrite",
+        "title": "NetSuite MCP：启用写入连接"
+      },
+      {
+        "command": "netsuiteMcp.disableWrite",
+        "title": "NetSuite MCP：关闭写入连接"
+      },
+      {
+        "command": "netsuiteMcp.rotateCertificate",
+        "title": "NetSuite MCP：轮换证书"
+      },
+      {
+        "command": "netsuiteMcp.repairPort",
+        "title": "NetSuite MCP：修复本地端口"
+      },
+      {
+        "command": "netsuiteMcp.removeProfile",
+        "title": "NetSuite MCP：移除连接"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -w -p .",
+    "typecheck": "tsc --noEmit -p .",
+    "lint": "eslint src --ext .ts",
+    "test": "vitest run",
+    "package": "npm run compile && vsce package"
+  },
+  "dependencies": {
+    "@peculiar/webcrypto": "^1.7.1",
+    "@peculiar/x509": "^2.0.0",
+    "@primno/dpapi": "^2.0.1",
+    "jsonc-parser": "^3.3.1",
+    "reflect-metadata": "^0.2.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.1.2",
+    "@types/vscode": "^1.125.0",
+    "@vscode/vsce": "^3.9.2",
+    "eslint": "^10.8.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.65.0",
+    "vitest": "^4.1.10"
+  }
+}

@@ -1,7 +1,7 @@
 {
   "name": "netsuite-mcp-tools",
   "displayName": "NetSuite MCP Tools",
-  "description": "通过本地 OAuth 2.0 JWT 代理将 NetSuite AI Connector 安全接入 VS Code MCP 客户端。",
+  "description": "通过本机浏览器 OAuth 2.0 Authorization Code + PKCE 代理将 NetSuite AI Connector 安全接入 VS Code MCP 客户端。",
   "version": "0.1.0",
   "publisher": "netsuite-mcp-tools",
   "license": "MIT",
@@ -26,7 +26,7 @@
     "commands": [
       {
         "command": "netsuiteMcp.configureProfile",
-        "title": "NetSuite MCP：配置连接"
+        "title": "NetSuite MCP：打开连接配置"
       },
       {
         "command": "netsuiteMcp.testConnection",
@@ -45,18 +45,21 @@
         "title": "NetSuite MCP：关闭写入连接"
       },
       {
-        "command": "netsuiteMcp.rotateCertificate",
-        "title": "NetSuite MCP：轮换证书"
-      },
-      {
-        "command": "netsuiteMcp.repairPort",
-        "title": "NetSuite MCP：修复本地端口"
-      },
-      {
         "command": "netsuiteMcp.removeProfile",
         "title": "NetSuite MCP：移除连接"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "NetSuite MCP",
+      "properties": {
+        "netsuiteMcp.allocatedPorts": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "仅当前 Windows 用户使用的本机端口分配索引，以英文逗号分隔。它不改变工作区 `environment.json` 中登记的 OAuth 回调端口。"
+        }
+      }
+    }
   },
   "scripts": {
     "compile": "tsc -p .",
@@ -67,11 +70,7 @@
     "package": "npm run compile && vsce package"
   },
   "dependencies": {
-    "@peculiar/webcrypto": "^1.7.1",
-    "@peculiar/x509": "^2.0.0",
-    "@primno/dpapi": "^2.0.1",
-    "jsonc-parser": "^3.3.1",
-    "reflect-metadata": "^0.2.2"
+    "jsonc-parser": "^3.3.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

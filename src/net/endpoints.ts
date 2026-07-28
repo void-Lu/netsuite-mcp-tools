@@ -21,6 +21,7 @@ export function buildNetSuiteEndpoints(accountIdInput: string): NetSuiteEndpoint
   return {
     accountId,
     host,
+    authorizationUrl: `https://${accountId}.app.netsuite.com/app/login/oauth2/authorize.nl`,
     tokenUrl: `https://${host}/services/rest/auth/oauth2/v1/token`,
     mcpUrl: `https://${host}${MCP_PATH}`
   };

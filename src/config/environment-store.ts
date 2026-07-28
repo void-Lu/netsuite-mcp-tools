@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { join, relative, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import {
   AccessMode,
   ConnectionProfile,
@@ -12,8 +12,24 @@ import {
 } from "../domain/types";
 import { atomicWriteFile, ensureDirectory, readTextIfExists, stableHash } from "../util/files";
 
-const LOCAL_GITIGNORE_RULES = ["/.netsuite-mcp/", "/.vscode/mcp.json", "/.mcp.json"];
+const LOCAL_GITIGNORE_RULES = ["/.netsuite-mcp/logs/", "/.vscode/mcp.json", "/.mcp.json"];
+const LEGACY_GITIGNORE_RULES = ["/.netsuite-mcp/"];
+const TEMPLATE_ACCOUNT_ID = "YOUR_NETSUITE_ACCOUNT_ID";
+const TOP_LEVEL_FIELDS = ["schemaVersion", "workspaceId", "listener", "allocatedPorts", "environments"] as const;
+const PRE_ALLOCATION_TOP_LEVEL_FIELDS = ["schemaVersion", "workspaceId", "listener", "environments"] as const;
+const LISTENER_FIELDS = ["host", "port"] as const;
+const ENVIRONMENT_FIELDS = ["accountId", "environmentType", "profiles"] as const;
+const PROFILE_FIELDS = ["id", "access", "status", "clientId", "createdAt", "verifiedAt"] as const;
+const LEGACY_PROFILE_FIELDS = [
+  "id", "access", "status", "clientId", "certificateId", "publicCertificatePath", "privateKeyPath", "expiresAt", "createdAt", "verifiedAt"
+] as const;
 
+export type ConfigurationTemplateResult = "initialized" | "completed" | "unchanged";
+
+/**
+ * 环境文件仅保存可审阅的 Public Client 元数据。本机 OAuth 的 state、PKCE
+ * verifier、access/refresh token 均由 OAuthClient 持有，绝不写入此处。
+ */
 export class EnvironmentStore {
   public readonly paths: WorkspacePaths;
   private state: EnvironmentState | undefined;
@@ -24,7 +40,6 @@ export class EnvironmentStore {
     this.paths = {
       workspaceRoot: resolvedRoot,
       dataDirectory,
-      certificatesDirectory: join(dataDirectory, "certificates"),
       logsDirectory: join(dataDirectory, "logs"),
       environmentFile: join(dataDirectory, "environment.json")
     };
@@ -35,13 +50,19 @@ export class EnvironmentStore {
       return this.state;
     }
     const content = await readTextIfExists(this.paths.environmentFile);
-    this.state = content ? parseEnvironmentState(content) : this.createEmptyState();
+    this.state = content?.trim() ? parseEnvironmentState(content) : this.createEmptyState();
+    return this.state;
+  }
+
+  public async reload(): Promise<EnvironmentState> {
+    const content = await readTextIfExists(this.paths.environmentFile);
+    this.state = content?.trim() ? parseEnvironmentState(content) : this.createEmptyState();
     return this.state;
   }
 
   public async save(): Promise<void> {
     const state = await this.load();
-    await ensureDirectory(this.paths.certificatesDirectory);
+    await ensureDirectory(this.paths.dataDirectory);
     await ensureDirectory(this.paths.logsDirectory);
     await atomicWriteFile(this.paths.environmentFile, `${JSON.stringify(state, null, 2)}\n`);
     await this.ensureGitIgnore();
@@ -49,6 +70,22 @@ export class EnvironmentStore {
 
   public async getState(): Promise<EnvironmentState> {
     return this.load();
+  }
+
+  public async ensureConfigurationTemplate(): Promise<ConfigurationTemplateResult> {
+    const existing = await readTextIfExists(this.paths.environmentFile);
+    if (existing === undefined || existing.trim().length === 0) {
+      this.state = this.createTemplateState();
+      await this.save();
+      return "initialized";
+    }
+    const completed = this.completeEnvironmentState(existing);
+    this.state = completed.state;
+    if (completed.changed) {
+      await this.save();
+      return "completed";
+    }
+    return "unchanged";
   }
 
   public async getEnvironment(accountId: string): Promise<NetSuiteEnvironment | undefined> {
@@ -69,49 +106,30 @@ export class EnvironmentStore {
   public async createDraftProfile(
     accountId: string,
     environmentType: EnvironmentType,
-    access: AccessMode,
-    expiresAt: Date
+    access: AccessMode
   ): Promise<{ environment: NetSuiteEnvironment; profile: ConnectionProfile }> {
     const state = await this.load();
-    const environment = state.environments[accountId] ?? {
-      accountId,
-      environmentType,
-      profiles: []
-    };
+    const environment = state.environments[accountId] ?? { accountId, environmentType, profiles: [] };
     if (environment.environmentType !== environmentType) {
       throw new NetSuiteMcpError("environment-type-mismatch", "该 accountId 已使用不同的环境标签，请先确认现有配置。");
     }
-    const profileId = randomUUID();
-    const profile: ConnectionProfile = {
-      id: profileId,
-      access,
-      status: "draft",
-      publicCertificatePath: relative(this.paths.dataDirectory, join(this.paths.certificatesDirectory, `${profileId}.public.pem`)),
-      privateKeyPath: relative(this.paths.dataDirectory, join(this.paths.certificatesDirectory, `${profileId}.private.dpapi`)),
-      expiresAt: expiresAt.toISOString(),
-      createdAt: new Date().toISOString()
-    };
+    const profile = this.createDraftProfileRecord(access);
     environment.profiles.push(profile);
     state.environments[accountId] = environment;
     await this.save();
     return { environment, profile };
   }
 
-  public async registerProfile(profileId: string, clientId: string, certificateId: string): Promise<ConnectionProfile> {
-    return this.updateProfile(profileId, (profile) => ({
-      ...profile,
-      clientId,
-      certificateId,
-      status: "registered"
-    }));
+  public async registerProfile(profileId: string, clientId: string): Promise<ConnectionProfile> {
+    const normalizedClientId = clientId.trim();
+    if (!normalizedClientId) {
+      throw new NetSuiteMcpError("profile-not-registered", "NetSuite Public Client ID 不能为空。");
+    }
+    return this.updateProfile(profileId, (profile) => ({ ...profile, clientId: normalizedClientId, status: "registered" }));
   }
 
   public async markVerified(profileId: string): Promise<ConnectionProfile> {
-    return this.updateProfile(profileId, (profile) => ({
-      ...profile,
-      status: "verified",
-      verifiedAt: new Date().toISOString()
-    }));
+    return this.updateProfile(profileId, (profile) => ({ ...profile, status: "verified", verifiedAt: new Date().toISOString() }));
   }
 
   public async setListenerPort(port: number): Promise<void> {
@@ -120,6 +138,36 @@ export class EnvironmentStore {
     }
     const state = await this.load();
     state.listener.port = port;
+    await this.save();
+  }
+
+  /**
+   * 只记录已完成浏览器授权和零数据健康检查的端口。该列表用于通知其他
+   * 工作区/用户避开已登记端口，并不改变当前 workspace 的 callback URI。
+   */
+  public async addAllocatedPort(port: number): Promise<void> {
+    if (!isValidAllocatedPort(port)) {
+      throw new NetSuiteMcpError("invalid-port", "已分配端口必须位于 1024 到 65535 之间。");
+    }
+    const state = await this.load();
+    if (state.allocatedPorts.includes(port)) {
+      return;
+    }
+    state.allocatedPorts.push(port);
+    await this.save();
+  }
+
+  /** 将其他 Windows 用户已成功登记的端口并入可共享的环境排除清单。 */
+  public async mergeAllocatedPorts(ports: readonly number[]): Promise<void> {
+    if (!ports.every(isValidAllocatedPort)) {
+      throw new NetSuiteMcpError("invalid-port", "已分配端口必须位于 1024 到 65535 之间。");
+    }
+    const state = await this.load();
+    const merged = uniquePorts([...state.allocatedPorts, ...ports]);
+    if (merged.length === state.allocatedPorts.length) {
+      return;
+    }
+    state.allocatedPorts = merged;
     await this.save();
   }
 
@@ -156,57 +204,322 @@ export class EnvironmentStore {
     return {
       schemaVersion: ENVIRONMENT_SCHEMA_VERSION,
       workspaceId: stableHash(this.paths.workspaceRoot),
-      listener: {
-        host: "127.0.0.1",
-        port: 0
-      },
+      listener: { host: "127.0.0.1", port: 0 },
+      allocatedPorts: [],
       environments: {}
     };
+  }
+
+  private createTemplateState(): EnvironmentState {
+    const state = this.createEmptyState();
+    state.environments[TEMPLATE_ACCOUNT_ID] = {
+      accountId: TEMPLATE_ACCOUNT_ID,
+      environmentType: "sandbox",
+      profiles: [this.createTemplateProfile("read"), this.createTemplateProfile("write")]
+    };
+    return state;
+  }
+
+  private createTemplateProfile(access: AccessMode): ConnectionProfile {
+    return { ...this.createDraftProfileRecord(access), clientId: "" };
+  }
+
+  private createDraftProfileRecord(access: AccessMode): ConnectionProfile {
+    return { id: randomUUID(), access, status: "draft", createdAt: new Date().toISOString() };
+  }
+
+  private completeEnvironmentState(content: string): { state: EnvironmentState; changed: boolean } {
+    const raw = parseEnvironmentDocument(content);
+    if (!isRecord(raw)) {
+      throw invalidEnvironmentSchema();
+    }
+    if (raw.schemaVersion === 1) {
+      return { state: migrateLegacyState(raw), changed: true };
+    }
+    assertOnlyKnownFields(raw, TOP_LEVEL_FIELDS);
+    let changed = false;
+    const state: EnvironmentState = {
+      schemaVersion: readSchemaVersion(raw, () => { changed = true; }),
+      workspaceId: readDerivedString(raw, "workspaceId", stableHash(this.paths.workspaceRoot), () => { changed = true; }),
+      listener: this.completeListener(raw.listener, () => { changed = true; }),
+      allocatedPorts: this.completeAllocatedPorts(raw.allocatedPorts, () => { changed = true; }),
+      environments: this.completeEnvironments(raw.environments, () => { changed = true; })
+    };
+    return { state, changed };
+  }
+
+  private completeListener(value: unknown, markChanged: () => void): EnvironmentState["listener"] {
+    if (value === undefined) {
+      markChanged();
+      return { host: "127.0.0.1", port: 0 };
+    }
+    if (!isRecord(value)) {
+      throw invalidEnvironmentSchema();
+    }
+    assertOnlyKnownFields(value, LISTENER_FIELDS);
+    if (value.host !== undefined && value.host !== "127.0.0.1") {
+      throw invalidEnvironmentSchema();
+    }
+    if (value.host === undefined) {
+      markChanged();
+    }
+    if (value.port !== undefined && !isValidListenerPort(value.port)) {
+      throw invalidEnvironmentSchema();
+    }
+    if (value.port === undefined) {
+      markChanged();
+    }
+    return { host: "127.0.0.1", port: (value.port as number | undefined) ?? 0 };
+  }
+
+  private completeAllocatedPorts(value: unknown, markChanged: () => void): number[] {
+    if (value === undefined) {
+      markChanged();
+      return [];
+    }
+    if (!Array.isArray(value) || !value.every(isValidAllocatedPort)) {
+      throw invalidEnvironmentSchema();
+    }
+    const ports = uniquePorts(value);
+    if (ports.length !== value.length) {
+      markChanged();
+    }
+    return ports;
+  }
+
+  private completeEnvironments(value: unknown, markChanged: () => void): Record<string, NetSuiteEnvironment> {
+    if (value === undefined || (isRecord(value) && Object.keys(value).length === 0)) {
+      markChanged();
+      return this.createTemplateState().environments;
+    }
+    if (!isRecord(value)) {
+      throw invalidEnvironmentSchema();
+    }
+    return Object.fromEntries(Object.entries(value).map(([accountId, environment]) => {
+      if (isUnsafeObjectKey(accountId)) {
+        throw invalidEnvironmentSchema();
+      }
+      return [accountId, this.completeEnvironment(accountId, environment, markChanged)];
+    }));
+  }
+
+  private completeEnvironment(accountId: string, value: unknown, markChanged: () => void): NetSuiteEnvironment {
+    if (!isRecord(value)) {
+      throw invalidEnvironmentSchema();
+    }
+    assertOnlyKnownFields(value, ENVIRONMENT_FIELDS);
+    if (value.accountId !== undefined && (typeof value.accountId !== "string" || value.accountId !== accountId)) {
+      throw invalidEnvironmentSchema();
+    }
+    if (value.accountId === undefined) {
+      markChanged();
+    }
+    if (value.environmentType !== undefined && !isEnvironmentType(value.environmentType)) {
+      throw invalidEnvironmentSchema();
+    }
+    if (value.environmentType === undefined) {
+      markChanged();
+    }
+    return {
+      accountId,
+      environmentType: (value.environmentType as EnvironmentType | undefined) ?? "sandbox",
+      profiles: this.completeProfiles(value.profiles, markChanged)
+    };
+  }
+
+  private completeProfiles(value: unknown, markChanged: () => void): ConnectionProfile[] {
+    if (value === undefined || (Array.isArray(value) && value.length === 0)) {
+      markChanged();
+      return [this.createTemplateProfile("read"), this.createTemplateProfile("write")];
+    }
+    if (!Array.isArray(value)) {
+      throw invalidEnvironmentSchema();
+    }
+    return value.map((profile) => this.completeProfile(profile, markChanged));
+  }
+
+  private completeProfile(value: unknown, markChanged: () => void): ConnectionProfile {
+    if (!isRecord(value)) {
+      throw invalidEnvironmentSchema();
+    }
+    assertOnlyKnownFields(value, PROFILE_FIELDS);
+    const id = readDerivedString(value, "id", randomUUID(), markChanged);
+    const access = value.access === undefined ? (markChanged(), "read") : isAccessMode(value.access) ? value.access : failSchema();
+    const status = value.status === undefined || value.status === "" ? (markChanged(), "draft") : isProfileStatus(value.status) ? value.status : failSchema();
+    const clientId = readOptionalString(value, "clientId", markChanged);
+    const createdAt = readDerivedString(value, "createdAt", new Date().toISOString(), markChanged);
+    const verifiedAt = readOptionalTimestamp(value, "verifiedAt");
+    return { id, access, status, clientId, createdAt, ...(verifiedAt ? { verifiedAt } : {}) };
   }
 
   private async ensureGitIgnore(): Promise<void> {
     const gitIgnorePath = join(this.paths.workspaceRoot, ".gitignore");
     const existing = (await readTextIfExists(gitIgnorePath)) ?? "";
-    const missing = LOCAL_GITIGNORE_RULES.filter((rule) => !existing.split(/\r?\n/).includes(rule));
-    if (missing.length > 0) {
-      const prefix = existing.length === 0 || existing.endsWith("\n") ? existing : `${existing}\n`;
-      await atomicWriteFile(gitIgnorePath, `${prefix}${missing.join("\n")}\n`);
+    const retainedLines = existing.split(/\r?\n/).filter((line) => !LEGACY_GITIGNORE_RULES.includes(line.trim()));
+    const missing = LOCAL_GITIGNORE_RULES.filter((rule) => !retainedLines.includes(rule));
+    if (missing.length > 0 || retainedLines.length !== existing.split(/\r?\n/).length) {
+      const retained = retainedLines.join("\n").replace(/\s*$/, "");
+      await atomicWriteFile(gitIgnorePath, `${retained}${retained ? "\n" : ""}${missing.join("\n")}\n`);
     }
   }
 }
 
 function parseEnvironmentState(content: string): EnvironmentState {
-  let raw: unknown;
+  const raw = parseEnvironmentDocument(content);
+  if (isRecord(raw) && raw.schemaVersion === 1) {
+    return migrateLegacyState(raw);
+  }
+  if (isEnvironmentState(raw)) {
+    return raw;
+  }
+  if (isPreAllocationEnvironmentState(raw)) {
+    return { ...raw, allocatedPorts: [] };
+  }
+  throw invalidEnvironmentSchema();
+}
+
+function parseEnvironmentDocument(content: string): unknown {
   try {
-    raw = JSON.parse(content);
+    return JSON.parse(content);
   } catch (error) {
     throw new NetSuiteMcpError("invalid-environment-json", "environment.json 不是有效 JSON，请修复或恢复备份。", error);
   }
-  if (!isEnvironmentState(raw)) {
-    throw new NetSuiteMcpError("invalid-environment-schema", "environment.json 的结构不受当前扩展支持。请恢复备份或重新配置。");
+}
+
+/** 仅接受已知 v1 结构，再无损保留 clientId 并删除废弃的证书路径/标识。 */
+function migrateLegacyState(raw: Record<string, unknown>): EnvironmentState {
+  if (!isLegacyEnvironmentState(raw)) {
+    throw invalidEnvironmentSchema();
   }
-  return raw;
+  return {
+    schemaVersion: ENVIRONMENT_SCHEMA_VERSION,
+    workspaceId: raw.workspaceId as string,
+    listener: raw.listener as EnvironmentState["listener"],
+    allocatedPorts: [],
+    environments: Object.fromEntries(Object.entries(raw.environments as Record<string, NetSuiteEnvironment>).map(([accountId, environment]) => [
+      accountId,
+      {
+        accountId: environment.accountId,
+        environmentType: environment.environmentType,
+        profiles: environment.profiles.map((profile) => ({
+          id: profile.id,
+          access: profile.access,
+          status: profile.status,
+          ...(profile.clientId === undefined ? {} : { clientId: profile.clientId }),
+          createdAt: profile.createdAt,
+          ...(profile.verifiedAt === undefined ? {} : { verifiedAt: profile.verifiedAt })
+        }))
+      }
+    ]))
+  };
+}
+
+function invalidEnvironmentSchema(): NetSuiteMcpError {
+  return new NetSuiteMcpError("invalid-environment-schema", "environment.json 的结构不受当前扩展支持。请恢复备份或重新配置。");
+}
+
+function failSchema(): never {
+  throw invalidEnvironmentSchema();
+}
+
+function assertOnlyKnownFields(value: Record<string, unknown>, allowed: readonly string[]): void {
+  if (!hasOnlyKeys(value, allowed)) {
+    throw invalidEnvironmentSchema();
+  }
+}
+
+function readSchemaVersion(value: Record<string, unknown>, markChanged: () => void): typeof ENVIRONMENT_SCHEMA_VERSION {
+  if (value.schemaVersion === undefined) {
+    markChanged();
+    return ENVIRONMENT_SCHEMA_VERSION;
+  }
+  if (value.schemaVersion !== ENVIRONMENT_SCHEMA_VERSION) {
+    throw invalidEnvironmentSchema();
+  }
+  return ENVIRONMENT_SCHEMA_VERSION;
+}
+
+function readDerivedString(value: Record<string, unknown>, field: string, fallback: string, markChanged: () => void): string {
+  const existing = value[field];
+  if (existing === undefined || existing === "") {
+    markChanged();
+    return fallback;
+  }
+  if (typeof existing !== "string") {
+    throw invalidEnvironmentSchema();
+  }
+  return existing;
+}
+
+function readOptionalString(value: Record<string, unknown>, field: string, markChanged: () => void): string {
+  const existing = value[field];
+  if (existing === undefined) {
+    markChanged();
+    return "";
+  }
+  if (typeof existing !== "string") {
+    throw invalidEnvironmentSchema();
+  }
+  return existing;
+}
+
+function readOptionalTimestamp(value: Record<string, unknown>, field: string): string | undefined {
+  const existing = value[field];
+  if (existing === undefined) {
+    return undefined;
+  }
+  if (typeof existing !== "string") {
+    throw invalidEnvironmentSchema();
+  }
+  return existing;
 }
 
 function isEnvironmentState(value: unknown): value is EnvironmentState {
-  if (!isRecord(value) || value.schemaVersion !== ENVIRONMENT_SCHEMA_VERSION || typeof value.workspaceId !== "string") {
-    return false;
-  }
-  if (!isRecord(value.listener) || value.listener.host !== "127.0.0.1" || typeof value.listener.port !== "number") {
-    return false;
-  }
-  if (!isRecord(value.environments)) {
-    return false;
-  }
-  return Object.entries(value.environments).every(([accountId, environment]) => isEnvironment(accountId, environment));
+  return isRecord(value) && hasOnlyKeys(value, TOP_LEVEL_FIELDS) &&
+    value.schemaVersion === ENVIRONMENT_SCHEMA_VERSION && typeof value.workspaceId === "string" &&
+    isListener(value.listener) && isAllocatedPorts(value.allocatedPorts) && isRecord(value.environments) &&
+    Object.entries(value.environments).every(([accountId, environment]) => isEnvironment(accountId, environment));
+}
+
+type PreAllocationEnvironmentState = Omit<EnvironmentState, "allocatedPorts">;
+
+function isPreAllocationEnvironmentState(value: unknown): value is PreAllocationEnvironmentState {
+  return isRecord(value) && hasOnlyKeys(value, PRE_ALLOCATION_TOP_LEVEL_FIELDS) &&
+    value.schemaVersion === ENVIRONMENT_SCHEMA_VERSION && typeof value.workspaceId === "string" &&
+    isListener(value.listener) && isRecord(value.environments) &&
+    Object.entries(value.environments).every(([accountId, environment]) => isEnvironment(accountId, environment));
+}
+
+function isLegacyEnvironmentState(value: Record<string, unknown>): boolean {
+  return hasOnlyKeys(value, TOP_LEVEL_FIELDS) && value.schemaVersion === 1 && typeof value.workspaceId === "string" &&
+    isListener(value.listener) && isRecord(value.environments) &&
+    Object.entries(value.environments).every(([accountId, environment]) => isLegacyEnvironment(accountId, environment));
+}
+
+function isListener(value: unknown): value is EnvironmentState["listener"] {
+  return isRecord(value) && hasOnlyKeys(value, LISTENER_FIELDS) && value.host === "127.0.0.1" && isValidListenerPort(value.port);
 }
 
 function isEnvironment(accountId: string, value: unknown): value is NetSuiteEnvironment {
-  return isRecord(value) && value.accountId === accountId && isEnvironmentType(value.environmentType) && Array.isArray(value.profiles) && value.profiles.every(isProfile);
+  return isRecord(value) && hasOnlyKeys(value, ENVIRONMENT_FIELDS) && value.accountId === accountId &&
+    isEnvironmentType(value.environmentType) && Array.isArray(value.profiles) && value.profiles.every(isProfile);
+}
+
+function isLegacyEnvironment(accountId: string, value: unknown): value is NetSuiteEnvironment {
+  return isRecord(value) && hasOnlyKeys(value, ENVIRONMENT_FIELDS) && value.accountId === accountId &&
+    isEnvironmentType(value.environmentType) && Array.isArray(value.profiles) && value.profiles.every(isLegacyProfile);
 }
 
 function isProfile(value: unknown): value is ConnectionProfile {
-  return isRecord(value) && typeof value.id === "string" && isAccessMode(value.access) && isProfileStatus(value.status) &&
+  return isRecord(value) && hasOnlyKeys(value, PROFILE_FIELDS) && typeof value.id === "string" &&
+    isAccessMode(value.access) && isProfileStatus(value.status) &&
+    (value.clientId === undefined || typeof value.clientId === "string") && typeof value.createdAt === "string" &&
+    (value.verifiedAt === undefined || typeof value.verifiedAt === "string");
+}
+
+function isLegacyProfile(value: unknown): value is ConnectionProfile {
+  return isRecord(value) && hasOnlyKeys(value, LEGACY_PROFILE_FIELDS) && typeof value.id === "string" &&
+    isAccessMode(value.access) && isProfileStatus(value.status) &&
     (value.clientId === undefined || typeof value.clientId === "string") &&
     (value.certificateId === undefined || typeof value.certificateId === "string") &&
     typeof value.publicCertificatePath === "string" && typeof value.privateKeyPath === "string" &&
@@ -215,7 +528,31 @@ function isProfile(value: unknown): value is ConnectionProfile {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  return Object.keys(value).every((key) => allowed.includes(key));
+}
+
+function isValidListenerPort(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 65535;
+}
+
+function isValidAllocatedPort(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1024 && value <= 65535;
+}
+
+function isAllocatedPorts(value: unknown): value is number[] {
+  return Array.isArray(value) && value.every(isValidAllocatedPort) && uniquePorts(value).length === value.length;
+}
+
+function uniquePorts(ports: readonly number[]): number[] {
+  return [...new Set(ports)];
+}
+
+function isUnsafeObjectKey(value: string): boolean {
+  return value === "__proto__" || value === "constructor" || value === "prototype";
 }
 
 function isAccessMode(value: unknown): value is AccessMode {
@@ -226,6 +563,6 @@ function isEnvironmentType(value: unknown): value is EnvironmentType {
   return value === "sandbox" || value === "production";
 }
 
-function isProfileStatus(value: unknown): boolean {
+function isProfileStatus(value: unknown): value is ConnectionProfile["status"] {
   return value === "draft" || value === "registered" || value === "verified" || value === "active";
 }

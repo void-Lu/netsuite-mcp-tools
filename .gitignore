@@ -4,7 +4,7 @@ docs
 .codex
 .github
 .trellis
-/.netsuite-mcp/
+/.netsuite-mcp/logs/
 /.vscode/mcp.json
 /.mcp.json
 out/
@@ -12,3 +12,4 @@ out/
 coverage/
 node_modules/
 dist
+.codegraph

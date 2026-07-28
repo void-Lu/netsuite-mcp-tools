@@ -2,8 +2,8 @@ import * as vscode from "vscode";
 import { EnvironmentStore } from "./config/environment-store";
 import { McpConfigWriter } from "./config/mcp-config-writer";
 import { OAuthClient } from "./net/oauth-client";
-import { CertificateService } from "./security/certificate-service";
 import { HealthCheckService } from "./services/health-check";
+import { VsCodeAllocatedPortRegistry } from "./services/vscode-allocated-port-registry";
 import { PortManager } from "./services/port-manager";
 import { ProfileManager } from "./services/profile-manager";
 import { RedactedLogger } from "./services/redacted-logger";
@@ -18,19 +18,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     return;
   }
   const store = new EnvironmentStore(workspaceRoot);
-  const state = await store.load();
+  await store.load();
   const logger = new RedactedLogger(store.paths.logsDirectory);
-  const certificateService = new CertificateService(store.paths, state.workspaceId);
-  const oauthClient = new OAuthClient(certificateService);
-  const healthCheck = new HealthCheckService(oauthClient);
-  const portManager = new PortManager(store);
+  const oauthClient = new OAuthClient();
+  const healthCheck = new HealthCheckService(oauthClient, fetch, logger);
+  const portManager = new PortManager(store, new VsCodeAllocatedPortRegistry());
   const profileManagerRef: { current?: ProfileManager } = {};
   const proxy = new McpProxy(
     oauthClient,
     async (profileId) => profileManagerRef.current?.resolveProxyRoute(profileId),
     logger
   );
-  const manager = new ProfileManager(store, certificateService, healthCheck, portManager, proxy);
+  const manager = new ProfileManager(store, oauthClient, healthCheck, portManager, proxy);
   profileManagerRef.current = manager;
   activeManager = manager;
   const configWriter = new McpConfigWriter(workspaceRoot);
@@ -66,26 +65,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   try {
     await manager.initialize();
     await refreshStatus();
-    await warnAboutExpiringCertificates(manager);
     await logger.info("extension_activated");
   } catch (error) {
     await logger.error("extension_activation_failed", { message: error instanceof Error ? error.message : "unknown" });
     statusBar.text = "$(error) NetSuite MCP：需要修复";
-    statusBar.tooltip = "本地代理未启动。运行“NetSuite MCP：修复本地端口”或查看诊断日志。";
+    statusBar.tooltip = "本地代理未启动。请释放 environment.json 中登记的端口后重试，或查看诊断日志。";
     statusBar.show();
   }
-}
-
-async function warnAboutExpiringCertificates(manager: ProfileManager): Promise<void> {
-  const profiles = await manager.getProfilesExpiringWithin(7);
-  if (profiles.length === 0) {
-    return;
-  }
-  const names = profiles.slice(0, 3).map(({ environment, profile }) => `${environment.accountId}/${profile.access}`).join("、");
-  const remainder = profiles.length > 3 ? ` 等 ${profiles.length} 个` : "";
-  void vscode.window.showWarningMessage(
-    `NetSuite MCP：${names}${remainder} 的客户端证书将在 7 天内到期。请轮换证书，并在 NetSuite 中完成新的证书映射。`
-  );
 }
 
 export async function deactivate(): Promise<void> {

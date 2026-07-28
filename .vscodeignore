@@ -1,4 +1,6 @@
 .vscode/**
+.codegraph/**
+.netsuite-mcp/**
 .agents/**
 .claude/**
 .codex/**
@@ -14,5 +16,6 @@ coverage/**
 **/*.map
 debug.log
 out/test/**
+out/security/**
 vitest.config.*
 eslint.config.*

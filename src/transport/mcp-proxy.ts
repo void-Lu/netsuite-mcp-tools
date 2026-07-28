@@ -1,7 +1,7 @@
 import { createServer, IncomingMessage, Server, ServerResponse } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { URL } from "node:url";
-import { ConnectionProfile, NetSuiteEndpoints } from "../domain/types";
+import { ConnectionProfile, NetSuiteEndpoints, NetSuiteMcpError } from "../domain/types";
 import { OAuthClient } from "../net/oauth-client";
 import { RedactedLogger } from "../services/redacted-logger";
 
@@ -81,9 +81,22 @@ export class McpProxy {
     return this.port ? `http://127.0.0.1:${this.port}/${profileId}/mcp` : undefined;
   }
 
+  public getAuthorizationCallbackUrl(): string | undefined {
+    return this.port ? `http://127.0.0.1:${this.port}/oauth/callback` : undefined;
+  }
+
   private async handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
     try {
       const localUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+      if (localUrl.pathname === "/oauth/callback") {
+        if (request.method !== "GET") {
+          this.respond(response, 405, "OAuth 回调只接受 GET 请求。");
+          return;
+        }
+        const result = await this.oauthClient.completeAuthorizationCallback(localUrl);
+        this.respondAuthorizationCallback(response, result.statusCode, result.message);
+        return;
+      }
       const segments = localUrl.pathname.split("/").filter(Boolean);
       if (segments.length !== 2 || segments[1] !== "mcp") {
         this.respond(response, 404, "未找到 MCP 入口。");
@@ -95,10 +108,14 @@ export class McpProxy {
         return;
       }
       const body = await readRequestBody(request);
-      await this.forward(route, request, response, localUrl.search, body, false);
+      await this.forward(route, request, response, localUrl.search, body);
     } catch (error) {
       await this.logger.error("proxy_request_failed", { message: error instanceof Error ? error.message : "unknown" });
       if (!response.headersSent) {
+        if (error instanceof NetSuiteMcpError && error.code === "authorization-required") {
+          this.respond(response, 503, error.message);
+          return;
+        }
         this.respond(response, 502, "本地 MCP 代理无法完成请求。请检查连接状态和诊断日志。");
       } else {
         response.destroy(error instanceof Error ? error : undefined);
@@ -111,8 +128,7 @@ export class McpProxy {
     request: IncomingMessage,
     response: ServerResponse,
     query: string,
-    body: Buffer,
-    retried: boolean
+    body: Buffer
   ): Promise<void> {
     const token = await this.oauthClient.getAccessToken(route.profile, route.endpoints);
     const mcpUrl = new URL(route.endpoints.mcpUrl);
@@ -132,11 +148,10 @@ export class McpProxy {
           headers
         },
         (upstreamResponse) => {
-          if (upstreamResponse.statusCode === 401 && !retried) {
-            upstreamResponse.resume();
-            this.oauthClient.invalidate(route.profile.id);
-            void this.forward(route, request, response, query, body, true).then(resolve, reject);
-            return;
+          if (upstreamResponse.statusCode === 401) {
+            // 绝不重放 MCP 工具调用：它可能已在服务端产生写入副作用。仅使当前
+            // 内存 access token 过期，让下一次独立请求按正常刷新路径取得新 token。
+            this.oauthClient.invalidateAccessToken(route.profile.id);
           }
           const responseHeaders = filterResponseHeaders(upstreamResponse.headers);
           response.writeHead(upstreamResponse.statusCode ?? 502, responseHeaders);
@@ -160,6 +175,16 @@ export class McpProxy {
   private respond(response: ServerResponse, statusCode: number, message: string): void {
     response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
     response.end(JSON.stringify({ error: message }));
+  }
+
+  private respondAuthorizationCallback(response: ServerResponse, statusCode: number, message: string): void {
+    response.writeHead(statusCode, {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'",
+      "x-content-type-options": "nosniff"
+    });
+    response.end(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>NetSuite MCP 授权</title><body><p>${message}</p></body></html>`);
   }
 }
 

@@ -7,6 +7,7 @@ describe("NetSuite endpoint construction", () => {
     expect(buildNetSuiteEndpoints("9832121_SB1")).toEqual({
       accountId: "9832121-sb1",
       host: "9832121-sb1.suitetalk.api.netsuite.com",
+      authorizationUrl: "https://9832121-sb1.app.netsuite.com/app/login/oauth2/authorize.nl",
       tokenUrl: "https://9832121-sb1.suitetalk.api.netsuite.com/services/rest/auth/oauth2/v1/token",
       mcpUrl: "https://9832121-sb1.suitetalk.api.netsuite.com/services/mcp/v1/suiteapp/com.netsuite.mcpstandardtools"
     });

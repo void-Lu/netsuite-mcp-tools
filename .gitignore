@@ -11,3 +11,4 @@ out/
 *.vsix
 coverage/
 node_modules/
+dist

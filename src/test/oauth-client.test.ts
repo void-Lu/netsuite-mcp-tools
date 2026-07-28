@@ -103,4 +103,25 @@ describe("OAuthClient", () => {
     const client = new OAuthClient(vi.fn<typeof fetch>());
     await expect(client.getAccessToken(profile, buildNetSuiteEndpoints("9832121-sb1"))).rejects.toMatchObject({ code: "authorization-required" });
   });
+
+  it("reports hasActiveSession only after a token is cached", async () => {
+    const fetchImplementation = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      access_token: "access-token",
+      refresh_token: "refresh-token",
+      expires_in: 3600
+    }), { status: 200 }));
+    const client = new OAuthClient(fetchImplementation);
+    const endpoints = buildNetSuiteEndpoints("9832121-sb1");
+
+    expect(client.hasActiveSession(profile.id)).toBe(false);
+
+    const request = client.beginAuthorization(profile, endpoints, redirectUri);
+    const callback = new URL(`${redirectUri}?state=${new URL(request.authorizationUrl).searchParams.get("state")}&code=auth-code`);
+    await client.completeAuthorizationCallback(callback);
+    await request.completion;
+
+    expect(client.hasActiveSession(profile.id)).toBe(true);
+    client.invalidate(profile.id);
+    expect(client.hasActiveSession(profile.id)).toBe(false);
+  });
 });

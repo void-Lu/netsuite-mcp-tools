@@ -102,6 +102,11 @@ export class ProfileManager {
     return this.enabledWriteProfiles.has(profileId);
   }
 
+  /** profile 是否在当前会话中持有内存 token。用于状态栏区分"磁盘 verified"与"运行时可用"。 */
+  public hasActiveSession(profileId: string): boolean {
+    return this.oauthClient.hasActiveSession(profileId);
+  }
+
   public async remove(profileId: string): Promise<ProfileSummary> {
     this.enabledWriteProfiles.delete(profileId);
     this.oauthClient.invalidate(profileId);
@@ -137,6 +142,28 @@ export class ProfileManager {
       throw new NetSuiteMcpError("oauth-callback-unavailable", "无法启动本机 OAuth 回调端口。");
     }
     return redirectUri;
+  }
+
+  /**
+   * 为每个已有 read profile 但缺少 write profile 的 environment 自动创建 draft
+   * write profile。启用写入连接前调用，确保用户能在下拉框中看到 write 选项。
+   */
+  public async ensureWriteProfilesForReadEnvironments(): Promise<void> {
+    const profiles = await this.listProfiles();
+    const environmentsWithRead = new Map<string, EnvironmentType>();
+    for (const { environment } of profiles) {
+      if (environment.profiles.some((p) => p.access === "read")) {
+        environmentsWithRead.set(environment.accountId, environment.environmentType);
+      }
+    }
+    for (const { environment } of profiles) {
+      if (environment.profiles.some((p) => p.access === "write")) {
+        environmentsWithRead.delete(environment.accountId);
+      }
+    }
+    for (const [accountId, environmentType] of environmentsWithRead) {
+      await this.store.createDraftProfile(accountId, environmentType, "write");
+    }
   }
 
   public async stop(): Promise<void> {

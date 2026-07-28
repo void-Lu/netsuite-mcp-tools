@@ -138,6 +138,46 @@ describe("workspace port and OAuth-session isolation", () => {
     expect(proxy.start).toHaveBeenCalledWith(53123);
     expect(oauth.authorize).toHaveBeenCalledWith(expect.objectContaining({ id: created.profile.id }), expect.objectContaining({ accountId: "9832121-sb1" }), "http://127.0.0.1:53123/oauth/callback", expect.any(Function));
   });
+
+  it("creates missing write profiles for environments that have read profiles", async () => {
+    const store = new EnvironmentStore(await workspace("ensure-write"));
+    const read = await store.createDraftProfile("9832121-sb1", "sandbox", "read");
+    await store.registerProfile(read.profile.id, "read-client");
+    const manager = new ProfileManager(store, fakeOAuth(), {} as HealthCheckService, fakePortManager(), fakeProxy() as unknown as McpProxy);
+
+    await manager.ensureWriteProfilesForReadEnvironments();
+
+    const profiles = await manager.listProfiles();
+    const writeProfiles = profiles.filter(({ profile }) => profile.access === "write");
+    expect(writeProfiles).toHaveLength(1);
+    expect(writeProfiles[0].environment.accountId).toBe("9832121-sb1");
+    expect(writeProfiles[0].profile.status).toBe("draft");
+  });
+
+  it("does not duplicate write profiles when one already exists", async () => {
+    const store = new EnvironmentStore(await workspace("ensure-write-existing"));
+    await store.createDraftProfile("9832121-sb1", "sandbox", "read");
+    await store.createDraftProfile("9832121-sb1", "sandbox", "write");
+    const manager = new ProfileManager(store, fakeOAuth(), {} as HealthCheckService, fakePortManager(), fakeProxy() as unknown as McpProxy);
+
+    await manager.ensureWriteProfilesForReadEnvironments();
+
+    const profiles = await manager.listProfiles();
+    const writeProfiles = profiles.filter(({ profile }) => profile.access === "write");
+    expect(writeProfiles).toHaveLength(1);
+  });
+
+  it("delegates hasActiveSession to the OAuth client", async () => {
+    const store = new EnvironmentStore(await workspace("has-session"));
+    const read = await store.createDraftProfile("9832121-sb1", "sandbox", "read");
+    await store.registerProfile(read.profile.id, "read-client");
+    const oauth = fakeOAuth();
+    (oauth.hasActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(false);
+    const manager = new ProfileManager(store, oauth, {} as HealthCheckService, fakePortManager(), fakeProxy() as unknown as McpProxy);
+
+    expect(manager.hasActiveSession(read.profile.id)).toBe(false);
+    expect(oauth.hasActiveSession).toHaveBeenCalledWith(read.profile.id);
+  });
 });
 
 async function workspace(label: string): Promise<string> {
@@ -177,7 +217,8 @@ function fakeOAuth(): OAuthClient {
   return {
     authorize: vi.fn(async () => ({ accessToken: "not-logged", httpStatus: 200 })),
     invalidate: vi.fn(),
-    clear: vi.fn()
+    clear: vi.fn(),
+    hasActiveSession: vi.fn(() => true)
   } as unknown as OAuthClient;
 }
 

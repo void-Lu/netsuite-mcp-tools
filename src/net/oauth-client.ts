@@ -191,6 +191,11 @@ export class OAuthClient {
     }
   }
 
+  /** 仅用于状态栏判定：profile 是否在当前会话中持有内存 token（不含 refresh 刷新能力判断）。 */
+  public hasActiveSession(profileId: string): boolean {
+    return this.cache.has(profileId);
+  }
+
   private async getAccessTokenValue(profile: ConnectionProfile, endpoints: NetSuiteEndpoints): Promise<TokenValue> {
     const cached = this.cache.get(profile.id);
     if (cached && cached.expiresAt - TOKEN_REFRESH_SKEW_MS > Date.now()) {

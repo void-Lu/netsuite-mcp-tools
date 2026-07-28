@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { EnvironmentStore } from "../config/environment-store";
-import { McpConfigWriter } from "../config/mcp-config-writer";
+import { codexServerName, McpConfigWriter } from "../config/mcp-config-writer";
 import { NetSuiteMcpError } from "../domain/types";
 import { ProfileManager, ProfileSummary } from "../services/profile-manager";
 
@@ -182,6 +182,20 @@ async function installAgentConfig(selected: ProfileSummary, manager: ProfileMana
   }
   const url = await manager.getMcpUrl(selected.profile.id);
   const server = await configWriter.install(selected.profile.id, selected.environment.accountId, selected.profile.access, url);
+
+  const codexConflictUrl = await configWriter.getCodexConflictUrl(selected.profile.access, url);
+  if (codexConflictUrl) {
+    const confirmed = await vscode.window.showWarningMessage(
+      `Codex 已配置 ${codexServerName(selected.profile.access)}，当前指向 ${codexConflictUrl}。是否覆盖为当前工作区的连接（${url}）？`,
+      { modal: true },
+      "覆盖 Codex 配置"
+    );
+    if (confirmed !== "覆盖 Codex 配置") {
+      await vscode.window.showInformationMessage(`已生成工作区 MCP 配置（VS Code / Claude Code）：${server.name}。Codex 配置未修改。`);
+      return;
+    }
+  }
+  await configWriter.installCodex(selected.profile.access, url);
   await vscode.window.showInformationMessage(`已生成本机 MCP 配置（VS Code / Claude Code / Codex）：${server.name}`);
 }
 

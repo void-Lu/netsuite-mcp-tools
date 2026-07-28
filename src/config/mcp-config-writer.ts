@@ -15,28 +15,61 @@ export class McpConfigWriter {
     private readonly codexConfigPath: string = join(homedir(), ".codex", "config.toml")
   ) {}
 
+  /**
+   * 写入工作区级 JSON 配置（.vscode/mcp.json 和 .mcp.json）。
+   * Codex 用户级配置不在此方法范围内，需单独调用 installCodex。
+   */
   public async install(profileId: string, accountId: string, access: AccessMode, url: string): Promise<ManagedMcpServer> {
     const server: ManagedMcpServer = {
       name: managedServerName(accountId, access),
       access,
       url
     };
-    const jsonChanges = await Promise.all([
+    const changes = await Promise.all([
       this.prepareUpsert(join(this.workspaceRoot, ".vscode", "mcp.json"), "servers", server),
       this.prepareUpsert(join(this.workspaceRoot, ".mcp.json"), "mcpServers", server)
     ]);
-    const codexChange = await this.prepareCodexUpsert(server.name, server.url);
-    const allChanges = [...jsonChanges, codexChange];
-    await Promise.all(allChanges.map(({ path, next }) => writeIfChanged(path, next)));
+    await Promise.all(changes.map(({ path, next }) => writeIfChanged(path, next)));
     return server;
   }
 
+  /**
+   * 检查 Codex 配置中是否已存在同 access 的托管条目且 URL 不同。
+   * 返回冲突的现有 URL，或 undefined 表示无冲突。
+   */
+  public async getCodexConflictUrl(access: AccessMode, url: string): Promise<string | undefined> {
+    const source = await readTextIfExists(this.codexConfigPath);
+    if (!source) {
+      return undefined;
+    }
+    const name = codexServerName(access);
+    const table = tomlFindTable(source, name);
+    if (!table) {
+      return undefined;
+    }
+    const existingUrl = tomlExtractUrl(table.content);
+    if (!existingUrl || !/^http:\/\/127\.0\.0\.1:\d+\//.test(existingUrl)) {
+      return undefined;
+    }
+    return existingUrl !== url ? existingUrl : undefined;
+  }
+
+  /** 写入 Codex 用户级 TOML 配置，使用简化名称 netsuite-mcp-<access>。 */
+  public async installCodex(access: AccessMode, url: string): Promise<void> {
+    const name = codexServerName(access);
+    const source = (await readTextIfExists(this.codexConfigPath)) ?? "";
+    const next = tomlUpsertServer(source, name, url);
+    await ensureDirectory(dirname(this.codexConfigPath));
+    await atomicWriteFile(this.codexConfigPath, next.endsWith("\n") ? next : `${next}\n`);
+  }
+
   public async remove(accountId: string, access: AccessMode): Promise<void> {
-    const name = managedServerName(accountId, access);
+    const jsonName = managedServerName(accountId, access);
+    const codexName = codexServerName(access);
     await Promise.all([
-      this.removeServer(join(this.workspaceRoot, ".vscode", "mcp.json"), "servers", name),
-      this.removeServer(join(this.workspaceRoot, ".mcp.json"), "mcpServers", name),
-      this.removeCodexServer(name)
+      this.removeServer(join(this.workspaceRoot, ".vscode", "mcp.json"), "servers", jsonName),
+      this.removeServer(join(this.workspaceRoot, ".mcp.json"), "mcpServers", jsonName),
+      this.removeCodexServer(codexName)
     ]);
   }
 
@@ -50,11 +83,12 @@ export class McpConfigWriter {
   }
 
   public async refreshExisting(accountId: string, access: AccessMode, url: string): Promise<void> {
-    const server: ManagedMcpServer = { name: managedServerName(accountId, access), access, url };
+    const jsonServer: ManagedMcpServer = { name: managedServerName(accountId, access), access, url };
+    const codexName = codexServerName(access);
     await Promise.all([
-      this.refreshIfOwned(join(this.workspaceRoot, ".vscode", "mcp.json"), "servers", server),
-      this.refreshIfOwned(join(this.workspaceRoot, ".mcp.json"), "mcpServers", server),
-      this.refreshCodexIfOwned(server.name, server.url)
+      this.refreshIfOwned(join(this.workspaceRoot, ".vscode", "mcp.json"), "servers", jsonServer),
+      this.refreshIfOwned(join(this.workspaceRoot, ".mcp.json"), "mcpServers", jsonServer),
+      this.refreshCodexIfOwned(codexName, url)
     ]);
   }
 
@@ -134,13 +168,6 @@ export class McpConfigWriter {
   // Codex TOML 文件操作（~/.codex/config.toml）
   // -----------------------------------------------------------------------
 
-  private async prepareCodexUpsert(name: string, url: string): Promise<{ path: string; next: string }> {
-    const source = (await readTextIfExists(this.codexConfigPath)) ?? "";
-    const next = tomlUpsertServer(source, name, url);
-    await ensureDirectory(dirname(this.codexConfigPath));
-    return { path: this.codexConfigPath, next: next.endsWith("\n") ? next : `${next}\n` };
-  }
-
   private async removeCodexServer(name: string): Promise<void> {
     const source = await readTextIfExists(this.codexConfigPath);
     if (!source) {
@@ -200,8 +227,14 @@ export class McpConfigWriter {
   }
 }
 
+/** 工作区级 JSON 配置的 server 名称：netsuite-mcp-<accountId>-<access>。 */
 export function managedServerName(accountId: string, access: AccessMode): string {
   return `netsuite-mcp-${accountId}-${access}`;
+}
+
+/** Codex 用户级配置的 server 名称：netsuite-mcp-<access>（不带 accountId，全局唯一）。 */
+export function codexServerName(access: AccessMode): string {
+  return `netsuite-mcp-${access}`;
 }
 
 // ===========================================================================

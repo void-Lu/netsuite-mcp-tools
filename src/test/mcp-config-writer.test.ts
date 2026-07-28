@@ -79,14 +79,15 @@ describe("McpConfigWriter", () => {
 });
 
 describe("McpConfigWriter Codex TOML", () => {
-  it("writes a streamable HTTP server entry to config.toml", async () => {
+  it("writes a streamable HTTP server entry with simplified name", async () => {
     const { root, codexPath } = await workspace();
     const writer = new McpConfigWriter(root, codexPath);
-    await writer.install("profile-id", "9832121-sb1", "read", "http://127.0.0.1:51234/profile-id/mcp");
+    await writer.installCodex("read", "http://127.0.0.1:51234/profile-id/mcp");
 
     const toml = await readFile(codexPath, "utf8");
-    expect(toml).toContain("[mcp_servers.netsuite-mcp-9832121-sb1-read]");
+    expect(toml).toContain("[mcp_servers.netsuite-mcp-read]");
     expect(toml).toContain('url = "http://127.0.0.1:51234/profile-id/mcp"');
+    expect(toml).not.toContain("9832121");
   });
 
   it("preserves existing config.toml content when adding a managed server", async () => {
@@ -94,21 +95,21 @@ describe("McpConfigWriter Codex TOML", () => {
     await mkdir(dirname(codexPath), { recursive: true });
     await writeFile(codexPath, 'model = "o3"\n\n[mcp_servers.other]\nurl = "https://example.com/mcp"\n');
     const writer = new McpConfigWriter(root, codexPath);
-    await writer.install("profile-id", "9832121-sb1", "read", "http://127.0.0.1:51234/profile-id/mcp");
+    await writer.installCodex("read", "http://127.0.0.1:51234/profile-id/mcp");
 
     const toml = await readFile(codexPath, "utf8");
     expect(toml).toContain('model = "o3"');
     expect(toml).toContain("[mcp_servers.other]");
     expect(toml).toContain('url = "https://example.com/mcp"');
-    expect(toml).toContain("[mcp_servers.netsuite-mcp-9832121-sb1-read]");
+    expect(toml).toContain("[mcp_servers.netsuite-mcp-read]");
     expect(toml).toContain('url = "http://127.0.0.1:51234/profile-id/mcp"');
   });
 
   it("updates the url when the managed server already exists", async () => {
     const { root, codexPath } = await workspace();
     const writer = new McpConfigWriter(root, codexPath);
-    await writer.install("profile-id", "9832121-sb1", "read", "http://127.0.0.1:51234/profile-id/mcp");
-    await writer.install("profile-id", "9832121-sb1", "read", "http://127.0.0.1:54321/profile-id/mcp");
+    await writer.installCodex("read", "http://127.0.0.1:51234/profile-id/mcp");
+    await writer.installCodex("read", "http://127.0.0.1:54321/profile-id/mcp");
 
     const toml = await readFile(codexPath, "utf8");
     expect(toml).toContain('url = "http://127.0.0.1:54321/profile-id/mcp"');
@@ -118,10 +119,36 @@ describe("McpConfigWriter Codex TOML", () => {
   it("refuses to overwrite a non-owned Codex server entry", async () => {
     const { root, codexPath } = await workspace();
     await mkdir(dirname(codexPath), { recursive: true });
-    await writeFile(codexPath, '[mcp_servers.netsuite-mcp-9832121-read]\nurl = "https://remote.example.com/mcp"\n');
+    await writeFile(codexPath, '[mcp_servers.netsuite-mcp-read]\nurl = "https://remote.example.com/mcp"\n');
     const writer = new McpConfigWriter(root, codexPath);
 
-    await expect(writer.install("profile-id", "9832121", "read", "http://127.0.0.1:51234/profile-id/mcp")).rejects.toThrow("其他工具使用");
+    await expect(writer.installCodex("read", "http://127.0.0.1:51234/profile-id/mcp")).rejects.toThrow("其他工具使用");
+  });
+
+  it("detects conflict when existing Codex entry points to a different URL", async () => {
+    const { root, codexPath } = await workspace();
+    const writer = new McpConfigWriter(root, codexPath);
+    await writer.installCodex("read", "http://127.0.0.1:51234/profile-a/mcp");
+
+    const conflict = await writer.getCodexConflictUrl("read", "http://127.0.0.1:54321/profile-b/mcp");
+    expect(conflict).toBe("http://127.0.0.1:51234/profile-a/mcp");
+  });
+
+  it("returns no conflict when Codex entry URL matches", async () => {
+    const { root, codexPath } = await workspace();
+    const writer = new McpConfigWriter(root, codexPath);
+    await writer.installCodex("read", "http://127.0.0.1:51234/profile-a/mcp");
+
+    const conflict = await writer.getCodexConflictUrl("read", "http://127.0.0.1:51234/profile-a/mcp");
+    expect(conflict).toBeUndefined();
+  });
+
+  it("returns no conflict when Codex config does not exist", async () => {
+    const { root, codexPath } = await workspace();
+    const writer = new McpConfigWriter(root, codexPath);
+
+    const conflict = await writer.getCodexConflictUrl("read", "http://127.0.0.1:51234/profile-a/mcp");
+    expect(conflict).toBeUndefined();
   });
 
   it("removes only managed entries from config.toml", async () => {
@@ -130,7 +157,7 @@ describe("McpConfigWriter Codex TOML", () => {
     await writeFile(codexPath, [
       'model = "o3"',
       "",
-      "[mcp_servers.netsuite-mcp-9832121-sb1-read]",
+      "[mcp_servers.netsuite-mcp-read]",
       'url = "http://127.0.0.1:51234/profile-id/mcp"',
       "",
       "[mcp_servers.other]",
@@ -142,7 +169,7 @@ describe("McpConfigWriter Codex TOML", () => {
     await writer.removeAllManaged();
 
     const toml = await readFile(codexPath, "utf8");
-    expect(toml).not.toContain("netsuite-mcp-9832121-sb1-read");
+    expect(toml).not.toContain("netsuite-mcp-read");
     expect(toml).toContain("[mcp_servers.other]");
     expect(toml).toContain('model = "o3"');
   });
@@ -162,7 +189,7 @@ describe("McpConfigWriter Codex TOML", () => {
   it("refreshes config.toml url when the port changes", async () => {
     const { root, codexPath } = await workspace();
     const writer = new McpConfigWriter(root, codexPath);
-    await writer.install("profile-id", "9832121-sb1", "read", "http://127.0.0.1:51234/profile-id/mcp");
+    await writer.installCodex("read", "http://127.0.0.1:51234/profile-id/mcp");
     await writer.refreshExisting("9832121-sb1", "read", "http://127.0.0.1:54321/profile-id/mcp");
 
     const toml = await readFile(codexPath, "utf8");

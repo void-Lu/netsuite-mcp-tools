@@ -15,7 +15,7 @@
 - **Token 丢失检测**：状态栏现在区分"磁盘上 verified"与"运行时持有内存 token"。VS Code 重启后若 OAuth 会话丢失，状态栏会回退显示"未配置"而非误报"已连接"。
 - **启用写入连接按需创建**：选择"启用写入连接"时，自动为缺少 write profile 的 environment 创建 draft 模板；若 clientId 为空则弹输入框引导填写。
 - **清理 MCP 配置操作**：新增轻量操作，扫描 `.vscode/mcp.json`、`.mcp.json` 和 `~/.codex/config.toml`，按 `netsuite-mcp-*` 名称模式删除所有由本扩展托管的条目，保留无关配置。
-- **Codex CLI 支持**：生成 Agent 配置时同时写入 `~/.codex/config.toml` 的 `[mcp_servers.<name>]` TOML 表，仅包含 `url` 字段，不含凭据。
+- **Codex CLI 支持**：生成 Agent 配置时同时写入 `~/.codex/config.toml` 的 `[mcp_servers.netsuite-mcp-<access>]` TOML 表（简化名称，不带 accountId，全局唯一 read/write 各一个）。切换工作区重新生成时若检测到已有条目指向不同 URL，弹窗确认是否覆盖。
 - **单 profile 自动选中**：当操作目标仅有一条符合条件的 profile 时，跳过 QuickPick 选择框直接执行。
 
 ### 变更

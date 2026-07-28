@@ -61,7 +61,11 @@ VS Code 重启后，即使 `environment.json` 中 profile 标记为 `verified`�
    - `.mcp.json`：Claude Code；
    - `~/.codex/config.toml`：Codex CLI。
 
-生成的配置仅包含 `http://127.0.0.1:<port>/<profile-id>/mcp`，没有 Client ID、Client Secret、授权码、PKCE verifier、JWT 或 access token。Codex 配置写入用户级 `~/.codex/config.toml` 的 `[mcp_servers.<name>]` 表，仅包含 `url` 字段，不涉及 `command`、`bearer_token` 或其他凭据字段。
+生成的配置仅包含 `http://127.0.0.1:<port>/<profile-id>/mcp`，没有 Client ID、Client Secret、授权码、PKCE verifier、JWT 或 access token。
+
+**VS Code / Claude Code**（工作区级）：配置写入 `.vscode/mcp.json` 和 `.mcp.json`，server 名称为 `netsuite-mcp-<accountId>-<access>`，各工作区互不影响。
+
+**Codex CLI**（用户级）：配置写入 `~/.codex/config.toml` 的 `[mcp_servers.netsuite-mcp-<access>]` 表，仅包含 `url` 字段。由于 Codex 不支持工作区级 MCP 配置，read 和 write 各只保留一个全局条目。切换工作区重新生成时，若检测到已有条目指向不同 URL，会弹窗确认是否覆盖。
 
 `environment.json` 只能保存非机密配置和扩展派生的文件元数据，可由管理员随项目共享给其他用户。`allocatedPorts` 会传递已验证工作区使用过的端口，帮助其他用户初始化新工作区时避让。若文件包含 private key、Client Secret、Certificate ID、JWT、token、认证头或其他未知字段，扩展会拒绝加载它。
 

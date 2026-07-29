@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EnvironmentStore } from "../config/environment-store";
+import { McpConfigWriter } from "../config/mcp-config-writer";
 import { OAuthClient } from "../net/oauth-client";
 import { HealthCheckService } from "../services/health-check";
 import { PortManager } from "../services/port-manager";
@@ -103,6 +104,42 @@ describe("workspace port and OAuth-session isolation", () => {
 
     await manager.initialize();
     expect(proxy.start).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes MCP configs when the listener port changes", async () => {
+    const store = new EnvironmentStore(await workspace("port-change"));
+    const created = await store.createDraftProfile("9832121-sb1", "sandbox");
+    await store.registerProfile(created.profile.id, "client-id");
+    await store.markVerified(created.profile.id);
+    await store.setListenerPort(53123);
+    const swappedPortManager = {
+      getOrAllocate: vi.fn(async () => 54000),
+      synchronizeAllocatedPorts: vi.fn(async () => undefined),
+      recordSuccessfulConnection: vi.fn(async () => undefined)
+    } as unknown as PortManager;
+    const configWriter = { refreshExisting: vi.fn(async () => undefined) } as unknown as McpConfigWriter;
+    const manager = new ProfileManager(store, fakeOAuth(), {} as HealthCheckService, swappedPortManager, fakeProxy() as unknown as McpProxy, configWriter);
+
+    await manager.initialize();
+
+    expect(configWriter.refreshExisting).toHaveBeenCalledWith(
+      expect.any(String),
+      `http://127.0.0.1:54000/${created.profile.id}/mcp`
+    );
+  });
+
+  it("does not refresh MCP configs when the listener port stays the same", async () => {
+    const store = new EnvironmentStore(await workspace("port-same"));
+    const created = await store.createDraftProfile("9832121-sb1", "sandbox");
+    await store.registerProfile(created.profile.id, "client-id");
+    await store.markVerified(created.profile.id);
+    await store.setListenerPort(53123);
+    const configWriter = { refreshExisting: vi.fn(async () => undefined) } as unknown as McpConfigWriter;
+    const manager = new ProfileManager(store, fakeOAuth(), {} as HealthCheckService, fakePortManager(), fakeProxy() as unknown as McpProxy, configWriter);
+
+    await manager.initialize();
+
+    expect(configWriter.refreshExisting).not.toHaveBeenCalled();
   });
 
   it("verifies a draft profile whose Public Client ID was filled in environment.json", async () => {

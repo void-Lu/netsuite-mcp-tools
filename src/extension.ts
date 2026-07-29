@@ -29,10 +29,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     async (profileId) => profileManagerRef.current?.resolveProxyRoute(profileId),
     logger
   );
-  const manager = new ProfileManager(store, oauthClient, healthCheck, portManager, proxy);
+  const configWriter = new McpConfigWriter(workspaceRoot);
+  const manager = new ProfileManager(store, oauthClient, healthCheck, portManager, proxy, configWriter);
   profileManagerRef.current = manager;
   activeManager = manager;
-  const configWriter = new McpConfigWriter(workspaceRoot);
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusBar.command = "netsuiteMcp.statusBarClick";
   context.subscriptions.push(statusBar);

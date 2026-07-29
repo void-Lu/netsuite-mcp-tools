@@ -89,7 +89,7 @@ VS Code 重启后，即使 `environment.json` 中 profile 标记为 `verified`�
 | --- | --- |
 | 浏览器授权失败或回调超时 | 核对 Public Client、Redirect URI（必须与模板完全一致）、Authorization Code Grant、AI Connector Service scope 与 OAuth 2.0 feature。 |
 | MCP 初始化失败 | 确认 SuiteApp 已安装、使用 MCP `2025-06-18`、Role 为非 Administrator 且具有 MCP Server Connection / OAuth 2.0 Access Tokens / REST Web Services 所需权限，并仅在 sandbox 运行 Phase 0。 |
-| 本地端口冲突 | 扩展会自动分配新的回调端口并更新 `environment.json`。由于 NetSuite 对 loopback Redirect URI 不校验端口（RFC 8252），无需在 Integration 中更新 Redirect URI。仅在多次自动分配均失败时，需关闭占用高位端口的程序后重试。 |
+| 本地端口冲突 | 扩展会自动分配新的回调端口并更新 `environment.json`，同时同步刷新已生成的 MCP 配置（`.vscode/mcp.json`、`.mcp.json`、`~/.codex/config.toml`）中的 URL。由于 NetSuite 对 loopback Redirect URI 不校验端口（RFC 8252），无需在 Integration 中更新 Redirect URI。仅在多次自动分配均失败时，需关闭占用高位端口的程序后重试。 |
 | 本机代理提示需要授权 | 点击状态栏，从下拉框选择 **启动连接** 或 **重新授权**，在系统浏览器中完成当前会话的授权。 |
 | Agent 未连接 | 检查 VS Code 是否打开该工作区、profile 是否已验证，以及 `.vscode/mcp.json` / `.mcp.json` 是否被 Git 跟踪或损坏。 |
 

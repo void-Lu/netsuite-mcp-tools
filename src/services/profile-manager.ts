@@ -1,5 +1,6 @@
 import { ConnectionProfile, EnvironmentType, NetSuiteEnvironment, NetSuiteMcpError } from "../domain/types";
 import { EnvironmentStore } from "../config/environment-store";
+import { McpConfigWriter } from "../config/mcp-config-writer";
 import { buildNetSuiteEndpoints, normalizeAccountId } from "../net/endpoints";
 import { AuthorizationBrowserOpener, OAuthClient } from "../net/oauth-client";
 import { HealthCheckService } from "./health-check";
@@ -20,7 +21,8 @@ export class ProfileManager {
     private readonly oauthClient: OAuthClient,
     private readonly healthCheck: HealthCheckService,
     private readonly portManager: PortManager,
-    private readonly proxy: McpProxy
+    private readonly proxy: McpProxy,
+    private readonly configWriter?: McpConfigWriter
   ) {}
 
   public async initialize(): Promise<void> {
@@ -138,11 +140,15 @@ export class ProfileManager {
     if (this.proxy.isListening()) {
       return;
     }
+    const previousPort = (await this.store.getState()).listener.port;
     let port = 0;
     for (let attempt = 0; attempt < MAX_PROXY_START_ATTEMPTS; attempt += 1) {
       port = await this.portManager.getOrAllocate();
       try {
         await this.proxy.start(port);
+        if (previousPort > 0 && port !== previousPort) {
+          await this.refreshMcpConfigs(port);
+        }
         return;
       } catch (error) {
         if (!isAddressInUse(error)) {
@@ -152,6 +158,26 @@ export class ProfileManager {
       }
     }
     throw listenerPortOccupied(port);
+  }
+
+  /** 端口变更后同步更新已生成的 MCP 配置中的 URL。刷新失败不影响代理启动。 */
+  private async refreshMcpConfigs(port: number): Promise<void> {
+    if (!this.configWriter) {
+      return;
+    }
+    try {
+      const state = await this.store.getState();
+      for (const environment of Object.values(state.environments)) {
+        for (const profile of environment.profiles) {
+          if (profile.status === "verified") {
+            const url = `http://127.0.0.1:${port}/${profile.id}/mcp`;
+            await this.configWriter.refreshExisting(state.workspaceId, url);
+          }
+        }
+      }
+    } catch {
+      // 配置刷新失败不影响代理启动；用户可通过"生成 Agent 配置"手动更新
+    }
   }
 
   private async requireProfile(profileId: string): Promise<ProfileSummary> {

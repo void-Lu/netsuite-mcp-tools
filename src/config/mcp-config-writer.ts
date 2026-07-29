@@ -85,28 +85,6 @@ export class McpConfigWriter {
     ]);
   }
 
-  /** 列出 Codex 配置中所有由本扩展托管的条目（名称以 netsuite-mcp- 开头且 URL 指向 loopback）。 */
-  public async listCodexManagedEntries(): Promise<{ name: string; url: string }[]> {
-    const source = await readTextIfExists(this.codexConfigPath);
-    if (!source) {
-      return [];
-    }
-    const regex = /^\[mcp_servers\.(netsuite-mcp-[^\]]+)\]/gm;
-    const entries: { name: string; url: string }[] = [];
-    let match: RegExpExecArray | null;
-    while ((match = regex.exec(source)) !== null) {
-      const name = match[1];
-      const table = tomlFindTable(source, name);
-      if (table && tomlIsOwnedServer(table.content)) {
-        const url = tomlExtractUrl(table.content);
-        if (url) {
-          entries.push({ name, url });
-        }
-      }
-    }
-    return entries;
-  }
-
   /** 删除 Codex 配置中指定名称的条目（仅当 URL 指向 loopback 时）。 */
   public async removeCodexServer(name: string): Promise<void> {
     const source = await readTextIfExists(this.codexConfigPath);

@@ -4,6 +4,13 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.3] - 2026-07-29
+
+### 变更
+
+- **Codex 配置生成一致性**：Codex 现在与 VS Code Copilot、Claude Code 一样，只新增或更新当前工作区的受托管配置条目；不再在生成后扫描或提示清理历史条目。用户仍可通过 **清理 MCP 配置** 显式移除历史受托管条目。
+- **MCP Standard Tools 前置条件**：README 的故障处理新增说明：仅完成 OAuth 和 MCP 健康检查不代表已发布工具；目标 NetSuite 账号还必须安装并启用 Oracle NetSuite 的 **MCP Standard Tools** SuiteApp。
+
 ## [0.3.2] - 2026-07-29
 
 ### 变更

@@ -164,18 +164,6 @@ describe("McpConfigWriter Codex TOML", () => {
     await expect(writer.installCodex(workspaceId, "http://127.0.0.1:51234/profile-id/mcp")).rejects.toThrow("其他工具使用");
   });
 
-  it("lists managed Codex entries for stale detection", async () => {
-    const { root, codexPath } = await workspace();
-    const writer = new McpConfigWriter(root, codexPath);
-    await writer.installCodex("ws-a", "http://127.0.0.1:51234/profile-a/mcp");
-    await writer.installCodex("ws-b", "http://127.0.0.1:54321/profile-b/mcp");
-
-    const entries = await writer.listCodexManagedEntries();
-    expect(entries).toHaveLength(2);
-    expect(entries.map((e) => e.name)).toEqual(expect.arrayContaining(["netsuite-mcp-ws-a", "netsuite-mcp-ws-b"]));
-    expect(entries.every((e) => e.url.startsWith("http://127.0.0.1:"))).toBe(true);
-  });
-
   it("removes a specific Codex entry by name", async () => {
     const { root, codexPath } = await workspace();
     const writer = new McpConfigWriter(root, codexPath);

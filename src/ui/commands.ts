@@ -170,11 +170,6 @@ async function generateClientConfig(
   const state = await store.getState();
   const url = await manager.getMcpUrl(selected.profile.id);
   const server = await configWriter.install(targets, state.workspaceId, url);
-
-  if (targets.includes("codex")) {
-    await detectAndPromptStaleCodexEntries(configWriter, store);
-  }
-
   await vscode.window.showInformationMessage(`已生成 MCP 配置：${server.name}`);
 }
 
@@ -230,38 +225,6 @@ async function pickAgentTargets(title: string): Promise<AgentTarget[]> {
     canPickMany: true
   });
   return picked?.map((item) => item.target) ?? [];
-}
-
-async function detectAndPromptStaleCodexEntries(
-  configWriter: McpConfigWriter,
-  store: EnvironmentStore
-): Promise<void> {
-  const entries = await configWriter.listCodexManagedEntries();
-  if (entries.length === 0) {
-    return;
-  }
-  const state = await store.getState();
-  const knownPorts = new Set(state.allocatedPorts);
-  const stale = entries.filter((entry) => {
-    const portMatch = entry.url.match(/127\.0\.0\.1:(\d+)/);
-    if (!portMatch) {
-      return false;
-    }
-    return !knownPorts.has(Number(portMatch[1]));
-  });
-  if (stale.length === 0) {
-    return;
-  }
-  const message = stale.length === 1
-    ? `Codex 配置中存在 1 个陈旧条目：${stale[0].name}。是否清理？`
-    : `Codex 配置中存在 ${stale.length} 个陈旧条目。是否全部清理？`;
-  const confirmed = await vscode.window.showWarningMessage(message, { modal: true }, "清理陈旧条目");
-  if (confirmed !== "清理陈旧条目") {
-    return;
-  }
-  for (const entry of stale) {
-    await configWriter.removeCodexServer(entry.name);
-  }
 }
 
 async function confirmProduction(accountId: string, action = "执行操作"): Promise<boolean> {

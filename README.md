@@ -2,6 +2,8 @@
 
 用于 Windows 本机 VS Code 的内部扩展：它通过 NetSuite OAuth 2.0 **Authorization Code + PKCE** 在系统浏览器中授权，在本机提供 Streamable HTTP MCP 代理，并为 VS Code Copilot、Claude Code 与 Codex CLI 生成无凭据的本地 MCP 配置。
 
+当前版本：**v0.3.3**。版本变更详见 `CHANGELOG.md`。
+
 > 这不是 M2M 或 mTLS 客户端证书代理。扩展使用 NetSuite Public Client Integration，授权码、PKCE verifier、state、access token 与 refresh token 只在当前 VS Code Extension Host 内存中存在。
 
 ## 支持范围
@@ -69,7 +71,7 @@ VS Code 重启后，即使 `environment.json` 中 profile 标记为 `verified`�
 
 **Claude Code**（工作区级）：配置写入 `.mcp.json`，server 名称为 `netsuite-mcp-<workspaceId>`。
 
-**Codex CLI**（工作区级）：配置写入 `.codex/config.toml` 的 `[mcp_servers.netsuite-mcp-<workspaceId>]` 表，仅包含 `url` 字段，不会读取或修改用户级 `~/.codex/config.toml`。生成 Codex 配置时，扩展只扫描当前项目 `.codex/config.toml` 中已有的 `netsuite-mcp-*` 条目，检测其 URL 中的端口是否仍在当前机器的 `allocatedPorts` 列表中；不在列表中的条目被视为陈旧残留，会提示用户清理。
+**Codex CLI**（工作区级）：配置写入 `.codex/config.toml` 的 `[mcp_servers.netsuite-mcp-<workspaceId>]` 表，仅包含 `url` 字段，不会读取或修改用户级 `~/.codex/config.toml`。与其他 Agent 一样，生成时仅新增或更新当前工作区的受托管条目；需要移除历史受托管条目时，请使用 **清理 MCP 配置** 操作。
 
 `environment.json` 只能保存非机密配置和扩展派生的文件元数据，可由管理员随项目共享给其他用户。`allocatedPorts` 会传递已验证工作区使用过的端口，帮助其他用户初始化新工作区时避让。若文件包含 private key、Client Secret、Certificate ID、JWT、token、认证头或其他未知字段，扩展会拒绝加载它。
 
@@ -89,6 +91,7 @@ VS Code 重启后，即使 `environment.json` 中 profile 标记为 `verified`�
 | --- | --- |
 | 浏览器授权失败或回调超时 | 核对 Public Client、Redirect URI（必须与模板完全一致）、Authorization Code Grant、AI Connector Service scope 与 OAuth 2.0 feature。 |
 | MCP 初始化失败 | 确认 SuiteApp 已安装、使用 MCP `2025-06-18`、Role 为非 Administrator 且具有 MCP Server Connection / OAuth 2.0 Access Tokens / REST Web Services 所需权限，并仅在 sandbox 运行 Phase 0。 |
+| MCP 健康检查成功，但 Agent 未显示任何工具 | 确认目标 NetSuite 账号已安装并启用 Oracle NetSuite 发布的 **MCP Standard Tools** SuiteApp。仅具备 AI Connector Service scope 可以完成 OAuth 和 MCP 握手；若该 SuiteApp 未安装或未生效，`tools/list` 仍可能成功返回空列表。安装或更新后，重新授权，并重启本地代理与 Agent 的 MCP 会话。 |
 | 本地端口冲突 | 扩展会自动分配新的回调端口并更新 `environment.json`，同时同步刷新已生成的 MCP 配置（`.vscode/mcp.json`、`.mcp.json`、`.codex/config.toml`）中的 URL。由于 NetSuite 对 loopback Redirect URI 不校验端口（RFC 8252），无需在 Integration 中更新 Redirect URI。仅在多次自动分配均失败时，需关闭占用高位端口的程序后重试。 |
 | 本机代理提示需要授权 | 点击状态栏，从下拉框选择 **启动连接** 或 **重新授权**，在系统浏览器中完成当前会话的授权。 |
 | Agent 未连接 | 检查 VS Code 是否打开该工作区、profile 是否已验证，以及 `.vscode/mcp.json`、`.mcp.json` 或 `.codex/config.toml` 是否被 Git 跟踪或损坏。 |

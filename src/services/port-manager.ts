@@ -27,17 +27,18 @@ export class PortManager {
 
   public async getOrAllocate(): Promise<number> {
     const state = await this.store.getState();
-    if (state.listener.port > 0) {
-      if (!await this.isAvailable(state.listener.port)) {
-        throw listenerPortOccupied(state.listener.port);
-      }
+    if (state.listener.port > 0 && await this.isAvailable(state.listener.port)) {
       return state.listener.port;
     }
+    // listener.port 为 0 或已被占用：同步排除索引后分配新端口
     await this.synchronizeAllocatedPorts();
     const excludedPorts = new Set([
       ...state.allocatedPorts,
       ...await this.allocatedPortRegistry.getAllocatedPorts()
     ]);
+    if (state.listener.port > 0) {
+      excludedPorts.add(state.listener.port);
+    }
     return this.allocateInitialPort(excludedPorts);
   }
 
@@ -67,7 +68,7 @@ export class PortManager {
 export function listenerPortOccupied(port: number): NetSuiteMcpError {
   return new NetSuiteMcpError(
     "listener-port-occupied",
-    `本地端口 ${port} 已被其他进程占用。请释放该端口后重试；扩展不会自动更改已登记的 OAuth 回调端口。`
+    `本地端口 ${port} 已被其他进程占用，多次自动分配新端口均失败。请关闭占用高位端口的程序后重试。`
   );
 }
 

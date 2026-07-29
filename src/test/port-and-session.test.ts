@@ -54,14 +54,25 @@ describe("workspace port and OAuth-session isolation", () => {
     expect(registry.mergeAllocatedPorts).toHaveBeenCalledWith([49152]);
   });
 
-  it("keeps an occupied fixed callback port and explains that it must be released", async () => {
+  it("auto-allocates a new port when the persisted listener port is occupied", async () => {
     const store = new EnvironmentStore(await workspace("fixed"));
     await store.setListenerPort(53123);
-    const manager = new PortManager(store, fakeRegistry(), () => 49152, async () => false);
+    const manager = new PortManager(store, fakeRegistry(), () => 49152, async (port) => port !== 53123);
 
-    await expect(manager.getOrAllocate()).rejects.toMatchObject({ code: "listener-port-occupied" });
-    await expect(manager.getOrAllocate()).rejects.toThrow("请释放该端口");
-    expect((await store.getState()).listener.port).toBe(53123);
+    const port = await manager.getOrAllocate();
+    expect(port).toBe(49152);
+    expect((await store.getState()).listener.port).toBe(49152);
+  });
+
+  it("excludes the occupied listener port when auto-allocating a replacement", async () => {
+    const store = new EnvironmentStore(await workspace("exclude-old"));
+    await store.setListenerPort(53123);
+    const candidates = [53123, 49154];
+    const manager = new PortManager(store, fakeRegistry(), () => candidates.shift() ?? 49154, async (port) => port !== 53123);
+
+    const port = await manager.getOrAllocate();
+    expect(port).toBe(49154);
+    expect((await store.getState()).listener.port).toBe(49154);
   });
 
   it("normalizes the comma-separated user allocation index without accepting invalid ports", () => {
@@ -80,7 +91,7 @@ describe("workspace port and OAuth-session isolation", () => {
     expect(proxy.start).toHaveBeenCalledWith(53123);
   });
 
-  it("reports a stable release-the-port error when the proxy loses the availability-check race", async () => {
+  it("retries with a new port when the proxy loses the availability-check race", async () => {
     const store = new EnvironmentStore(await workspace("listen-race"));
     const profile = await store.createDraftProfile("9832121-sb1", "sandbox");
     await store.registerProfile(profile.profile.id, "read-client");
@@ -90,7 +101,8 @@ describe("workspace port and OAuth-session isolation", () => {
     proxy.start.mockRejectedValueOnce(Object.assign(new Error("address in use"), { code: "EADDRINUSE" }));
     const manager = new ProfileManager(store, fakeOAuth(), {} as HealthCheckService, fakePortManager(), proxy as unknown as McpProxy);
 
-    await expect(manager.initialize()).rejects.toThrow("请释放该端口");
+    await manager.initialize();
+    expect(proxy.start).toHaveBeenCalledTimes(2);
   });
 
   it("verifies a draft profile whose Public Client ID was filled in environment.json", async () => {

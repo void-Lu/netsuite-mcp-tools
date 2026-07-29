@@ -6,6 +6,8 @@ import { HealthCheckService } from "./health-check";
 import { listenerPortOccupied, PortManager } from "./port-manager";
 import { McpProxy, ProxyRoute } from "../transport/mcp-proxy";
 
+const MAX_PROXY_START_ATTEMPTS = 3;
+
 export interface ProfileSummary {
   environment: NetSuiteEnvironment;
   profile: ConnectionProfile;
@@ -51,7 +53,7 @@ export class ProfileManager {
     await this.ensureProxyStarted();
     const redirectUri = this.proxy.getAuthorizationCallbackUrl();
     if (!redirectUri) {
-      throw new NetSuiteMcpError("oauth-callback-unavailable", "本机 OAuth 回调端口未启动。请释放 environment.json 中登记的端口后重试。");
+      throw new NetSuiteMcpError("oauth-callback-unavailable", "本机 OAuth 回调端口未启动。请重试。");
     }
     const endpoints = buildNetSuiteEndpoints(found.environment.accountId);
     await this.oauthClient.authorize(found.profile, endpoints, redirectUri, openBrowser);
@@ -133,17 +135,23 @@ export class ProfileManager {
   }
 
   private async ensureProxyStarted(): Promise<void> {
-    if (!this.proxy.isListening()) {
-      const port = await this.portManager.getOrAllocate();
+    if (this.proxy.isListening()) {
+      return;
+    }
+    let port = 0;
+    for (let attempt = 0; attempt < MAX_PROXY_START_ATTEMPTS; attempt += 1) {
+      port = await this.portManager.getOrAllocate();
       try {
         await this.proxy.start(port);
+        return;
       } catch (error) {
-        if (isAddressInUse(error)) {
-          throw listenerPortOccupied(port);
+        if (!isAddressInUse(error)) {
+          throw error;
         }
-        throw error;
+        // 可用性检查与 bind 之间出现竞态：getOrAllocate 会检测到旧端口被占用并分配新端口
       }
     }
+    throw listenerPortOccupied(port);
   }
 
   private async requireProfile(profileId: string): Promise<ProfileSummary> {

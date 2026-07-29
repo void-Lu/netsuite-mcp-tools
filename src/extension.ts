@@ -58,7 +58,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     switch (state.kind) {
       case "needsFix":
         statusBar.text = "$(error) NetSuite MCP：需要修复";
-        statusBar.tooltip = "本地代理未启动。请释放 environment.json 中登记的端口后重试，或查看诊断日志。";
+        statusBar.tooltip = "本地代理未启动。请重试或查看诊断日志。";
         break;
       case "connected":
         statusBar.text = "$(plug) NetSuite MCP：已连接";

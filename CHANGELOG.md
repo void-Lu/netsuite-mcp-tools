@@ -4,6 +4,14 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.1] - 2026-07-29
+
+### 变更
+
+- **端口占用自动恢复**：当 `environment.json` 中持久化的 `listener.port` 被其他进程占用时，扩展不再要求用户手动释放端口，而是自动分配一个新的高位端口并更新 `environment.json`。由于 NetSuite 遵循 RFC 8252 对 loopback Redirect URI 不校验端口，OAuth 授权不受影响，无需在 Integration 中更新 Redirect URI。
+- **代理启动竞态重试**：`ensureProxyStarted` 在 `proxy.start` 遇到 `EADDRINUSE` 竞态时自动重试（最多 3 次），每次重试会通过 `getOrAllocate` 检测到旧端口被占用并分配新端口，而非直接报错。
+- **UI 提示更新**：状态栏"需要修复"状态、`oauth-callback-unavailable` 错误及故障处理表中涉及"请释放端口"的文案已更新为"请重试"，反映端口冲突现在被自动处理。
+
 ## [0.3.0] - 2026-07-29
 
 ### 新增

@@ -52,7 +52,7 @@ async function handleStatusBarClick(
   const state = await computeState();
   switch (state.kind) {
     case "needsFix":
-      await vscode.window.showErrorMessage("本地代理端口被占用。请释放 environment.json 中登记的端口后重新加载窗口。");
+      await vscode.window.showErrorMessage("本地代理启动失败。请重试或查看诊断日志。");
       break;
     case "unconfigured":
       if (!state.hasValidConfig) {

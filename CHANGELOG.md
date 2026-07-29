@@ -4,6 +4,32 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.0] - 2026-07-29
+
+### 新增
+
+- **断开连接**：已连接状态下可从下拉框选择"断开连接"，清除当前工作区的内存 token、停止本机代理服务器，并将 profile 状态回退为 `registered`。已生成的 MCP 配置不会被自动清理，方便后续重新启动连接。
+- **Agent 多选**：生成 Agent 配置和清理 MCP 配置时，弹出多选下拉框选择目标 Agent（VS Code Copilot、Claude Code、Codex CLI），允许多选，空选静默返回。
+- **Codex 陈旧条目检测**：生成 Codex 配置时，扫描已有的 `netsuite-mcp-*` 条目，检查其 URL 中的端口是否仍在当前机器的 `allocatedPorts` 列表中。不在列表中的条目被视为陈旧残留，提示用户清理。
+- **重新授权保留旧 token**：点击"重新授权"时不再提前清除当前 token。旧 token 在新授权完成前继续有效，避免授权中途或失败导致连接意外中断。
+- **Schema v3 迁移**：`environment.json` 从 v2 自动迁移到 v3，将 read/write 两个 profile 合并为一个（优先保留已验证的，其次保留有 clientId 的），移除 `access` 字段。
+
+### 变更
+
+- **移除 read/write 区分**：每个工作区只有一个 profile 和一个 MCP 连接。实际读写权限完全由 NetSuite Role 控制，本地不再做 read/write 区分。移除了 `AccessMode` 类型、`enableWrite`/`disableWrite` 命令、`writeEnabled` 状态栏状态、`ensureWriteProfilesForReadEnvironments` 等全部 write 相关逻辑。
+- **MCP 命名改为 workspaceId**：JSON 和 Codex 配置统一使用 `netsuite-mcp-<workspaceId>` 命名，不再区分 read/write，不再包含 accountId。
+- **"测试连接"改名为"启动连接"**：未连接状态下的操作菜单中，"测试连接"改名为"启动连接"；已连接状态下保留"重新授权"。
+- **状态栏文案更新**："未配置"改为"未连接"，"只读已连接"改为"已连接"，tooltip 根据 clientId 是否已填写区分"点击启动连接"和"点击配置连接"。
+- **代理路由判断**：`resolveProxyRoute` 的启用条件改为 `profile.status === "verified" && hasActiveSession`，移除了 `ProxyRoute.enabled` 字段。
+- **`beginAuthorization` 清理旧 pending**：开始新的授权流程时，自动清理同一 profileId 的旧 pending authorization，避免连续点击产生竞态。
+
+### 移除
+
+- **移除 `enableWrite` / `disableWrite` 命令**：不再提供"启用写入连接"和"关闭写入连接"操作。
+- **移除 `getCodexConflictUrl`**：新命名以 workspaceId 保证唯一性，不再需要冲突检测。
+- **移除 `codexServerName` 函数**：统一使用 `managedServerName(workspaceId)`。
+- **移除 `ProfileStatus` 中的 `"active"`**：当前代码未使用此值。
+
 ## [0.2.0] - 2026-07-29
 
 ### 新增

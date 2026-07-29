@@ -1,12 +1,11 @@
-export const ENVIRONMENT_SCHEMA_VERSION = 2 as const;
+export const ENVIRONMENT_SCHEMA_VERSION = 3 as const;
 
-export type AccessMode = "read" | "write";
 export type EnvironmentType = "sandbox" | "production";
-export type ProfileStatus = "draft" | "registered" | "verified" | "active";
+export type ProfileStatus = "draft" | "registered" | "verified";
+export type AgentTarget = "vscode" | "claude-code" | "codex";
 
 export interface ConnectionProfile {
   id: string;
-  access: AccessMode;
   status: ProfileStatus;
   clientId?: string;
   createdAt: string;
@@ -74,7 +73,6 @@ export interface HealthCheckResult {
 export interface ManagedMcpServer {
   name: string;
   url: string;
-  access: AccessMode;
 }
 
 export class NetSuiteMcpError extends Error {

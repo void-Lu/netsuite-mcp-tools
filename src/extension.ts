@@ -44,14 +44,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return { kind: "needsFix" };
     }
     const profiles = await manager.listProfiles();
-    const activeWrites = profiles.filter(({ profile }) =>
-      profile.access === "write" && manager.isWriteEnabled(profile.id));
-    if (activeWrites.length > 0) {
-      return { kind: "writeEnabled", profiles };
-    }
-    const activeReads = profiles.filter(({ profile }) =>
-      profile.access === "read" && profile.status === "verified" && manager.hasActiveSession(profile.id));
-    if (activeReads.length > 0) {
+    const active = profiles.filter(({ profile }) =>
+      profile.status === "verified" && manager.hasActiveSession(profile.id));
+    if (active.length > 0) {
       return { kind: "connected", profiles };
     }
     const hasValidConfig = profiles.some(({ profile }) => profile.clientId?.trim());
@@ -65,17 +60,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         statusBar.text = "$(error) NetSuite MCP：需要修复";
         statusBar.tooltip = "本地代理未启动。请释放 environment.json 中登记的端口后重试，或查看诊断日志。";
         break;
-      case "writeEnabled":
-        statusBar.text = "$(warning) NetSuite MCP：写入已启用";
-        statusBar.tooltip = "写入连接将在关闭或重启 VS Code 后自动关闭。";
-        break;
       case "connected":
-        statusBar.text = "$(plug) NetSuite MCP：只读已连接";
-        statusBar.tooltip = "只读 MCP 代理已在本机 loopback 地址运行。";
+        statusBar.text = "$(plug) NetSuite MCP：已连接";
+        statusBar.tooltip = "MCP 代理已在本机 loopback 地址运行。";
         break;
       case "unconfigured":
-        statusBar.text = "$(plug) NetSuite MCP：未配置";
-        statusBar.tooltip = "点击配置 NetSuite MCP 连接。";
+        statusBar.text = "$(plug) NetSuite MCP：未连接";
+        statusBar.tooltip = state.hasValidConfig
+          ? "点击启动 NetSuite MCP 连接。"
+          : "点击配置 NetSuite MCP 连接。";
         break;
     }
     statusBar.show();

@@ -2,7 +2,7 @@
   "name": "netsuite-mcp-tools",
   "displayName": "NetSuite MCP Tools",
   "description": "通过本机浏览器 OAuth 2.0 Authorization Code + PKCE 代理将 NetSuite AI Connector 安全接入 VS Code MCP 客户端。",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "netsuite-mcp-tools",
   "license": "MIT",
   "repository": {
@@ -29,20 +29,16 @@
         "title": "NetSuite MCP：打开连接配置"
       },
       {
-        "command": "netsuiteMcp.testConnection",
-        "title": "NetSuite MCP：测试连接"
+        "command": "netsuiteMcp.startConnection",
+        "title": "NetSuite MCP：启动连接"
       },
       {
         "command": "netsuiteMcp.generateClientConfig",
         "title": "NetSuite MCP：生成 Agent 配置"
       },
       {
-        "command": "netsuiteMcp.enableWrite",
-        "title": "NetSuite MCP：启用写入连接"
-      },
-      {
-        "command": "netsuiteMcp.disableWrite",
-        "title": "NetSuite MCP：关闭写入连接"
+        "command": "netsuiteMcp.disconnect",
+        "title": "NetSuite MCP：断开连接"
       }
     ],
     "configuration": {

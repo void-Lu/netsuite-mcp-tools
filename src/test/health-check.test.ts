@@ -6,7 +6,6 @@ import { redactIdentifier } from "../util/redaction";
 
 const profile: ConnectionProfile = {
   id: "profile-123456789",
-  access: "read",
   status: "registered",
   clientId: "client-id-must-not-appear-in-logs",
   createdAt: "2026-07-28T00:00:00.000Z"

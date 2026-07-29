@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { dirname, join, relative } from "node:path";
 import { homedir } from "node:os";
 import { applyEdits, modify, parse, ParseError } from "jsonc-parser";
-import { AccessMode, ManagedMcpServer, NetSuiteMcpError } from "../domain/types";
+import { AgentTarget, ManagedMcpServer, NetSuiteMcpError } from "../domain/types";
 import { atomicWriteFile, ensureDirectory, readTextIfExists } from "../util/files";
 
 const execFileAsync = promisify(execFile);
@@ -16,80 +16,107 @@ export class McpConfigWriter {
   ) {}
 
   /**
-   * 写入工作区级 JSON 配置（.vscode/mcp.json 和 .mcp.json）。
-   * Codex 用户级配置不在此方法范围内，需单独调用 installCodex。
+   * 写入工作区级 JSON 配置（.vscode/mcp.json 和 .mcp.json）和/或 Codex 用户级配置。
+   * targets 决定写入哪些 agent 的配置。
    */
-  public async install(profileId: string, accountId: string, access: AccessMode, url: string): Promise<ManagedMcpServer> {
+  public async install(
+    targets: readonly AgentTarget[],
+    workspaceId: string,
+    url: string
+  ): Promise<ManagedMcpServer> {
     const server: ManagedMcpServer = {
-      name: managedServerName(accountId, access),
-      access,
+      name: managedServerName(workspaceId),
       url
     };
-    const changes = await Promise.all([
-      this.prepareUpsert(join(this.workspaceRoot, ".vscode", "mcp.json"), "servers", server),
-      this.prepareUpsert(join(this.workspaceRoot, ".mcp.json"), "mcpServers", server)
-    ]);
-    await Promise.all(changes.map(({ path, next }) => writeIfChanged(path, next)));
+    const changes: Promise<{ path: string; next: string }>[] = [];
+    if (targets.includes("vscode")) {
+      changes.push(this.prepareUpsert(join(this.workspaceRoot, ".vscode", "mcp.json"), "servers", server));
+    }
+    if (targets.includes("claude-code")) {
+      changes.push(this.prepareUpsert(join(this.workspaceRoot, ".mcp.json"), "mcpServers", server));
+    }
+    const results = await Promise.all(changes);
+    await Promise.all(results.map(({ path, next }) => writeIfChanged(path, next)));
+    if (targets.includes("codex")) {
+      await this.installCodex(workspaceId, url);
+    }
     return server;
   }
 
-  /**
-   * 检查 Codex 配置中是否已存在同 access 的托管条目且 URL 不同。
-   * 返回冲突的现有 URL，或 undefined 表示无冲突。
-   */
-  public async getCodexConflictUrl(access: AccessMode, url: string): Promise<string | undefined> {
-    const source = await readTextIfExists(this.codexConfigPath);
-    if (!source) {
-      return undefined;
-    }
-    const name = codexServerName(access);
-    const table = tomlFindTable(source, name);
-    if (!table) {
-      return undefined;
-    }
-    const existingUrl = tomlExtractUrl(table.content);
-    if (!existingUrl || !/^http:\/\/127\.0\.0\.1:\d+\//.test(existingUrl)) {
-      return undefined;
-    }
-    return existingUrl !== url ? existingUrl : undefined;
-  }
-
-  /** 写入 Codex 用户级 TOML 配置，使用简化名称 netsuite-mcp-<access>。 */
-  public async installCodex(access: AccessMode, url: string): Promise<void> {
-    const name = codexServerName(access);
+  /** 写入 Codex 用户级 TOML 配置，使用 workspaceId 命名。 */
+  public async installCodex(workspaceId: string, url: string): Promise<void> {
+    const name = managedServerName(workspaceId);
     const source = (await readTextIfExists(this.codexConfigPath)) ?? "";
     const next = tomlUpsertServer(source, name, url);
     await ensureDirectory(dirname(this.codexConfigPath));
     await atomicWriteFile(this.codexConfigPath, next.endsWith("\n") ? next : `${next}\n`);
   }
 
-  public async remove(accountId: string, access: AccessMode): Promise<void> {
-    const jsonName = managedServerName(accountId, access);
-    const codexName = codexServerName(access);
+  public async remove(workspaceId: string): Promise<void> {
+    const name = managedServerName(workspaceId);
     await Promise.all([
-      this.removeServer(join(this.workspaceRoot, ".vscode", "mcp.json"), "servers", jsonName),
-      this.removeServer(join(this.workspaceRoot, ".mcp.json"), "mcpServers", jsonName),
-      this.removeCodexServer(codexName)
+      this.removeServer(join(this.workspaceRoot, ".vscode", "mcp.json"), "servers", name),
+      this.removeServer(join(this.workspaceRoot, ".mcp.json"), "mcpServers", name),
+      this.removeCodexServer(name)
     ]);
   }
 
   /** 扫描并删除所有由本扩展托管的 MCP server 条目（名称以 netsuite-mcp- 开头且 URL 指向 loopback）。 */
-  public async removeAllManaged(): Promise<void> {
+  public async removeAllManaged(targets: readonly AgentTarget[]): Promise<void> {
+    const tasks: Promise<void>[] = [];
+    if (targets.includes("vscode")) {
+      tasks.push(this.removeAllManagedInFile(join(this.workspaceRoot, ".vscode", "mcp.json"), "servers"));
+    }
+    if (targets.includes("claude-code")) {
+      tasks.push(this.removeAllManagedInFile(join(this.workspaceRoot, ".mcp.json"), "mcpServers"));
+    }
+    if (targets.includes("codex")) {
+      tasks.push(this.removeAllCodexManaged());
+    }
+    await Promise.all(tasks);
+  }
+
+  public async refreshExisting(workspaceId: string, url: string): Promise<void> {
+    const server: ManagedMcpServer = { name: managedServerName(workspaceId), url };
     await Promise.all([
-      this.removeAllManagedInFile(join(this.workspaceRoot, ".vscode", "mcp.json"), "servers"),
-      this.removeAllManagedInFile(join(this.workspaceRoot, ".mcp.json"), "mcpServers"),
-      this.removeAllCodexManaged()
+      this.refreshIfOwned(join(this.workspaceRoot, ".vscode", "mcp.json"), "servers", server),
+      this.refreshIfOwned(join(this.workspaceRoot, ".mcp.json"), "mcpServers", server),
+      this.refreshCodexIfOwned(server.name, url)
     ]);
   }
 
-  public async refreshExisting(accountId: string, access: AccessMode, url: string): Promise<void> {
-    const jsonServer: ManagedMcpServer = { name: managedServerName(accountId, access), access, url };
-    const codexName = codexServerName(access);
-    await Promise.all([
-      this.refreshIfOwned(join(this.workspaceRoot, ".vscode", "mcp.json"), "servers", jsonServer),
-      this.refreshIfOwned(join(this.workspaceRoot, ".mcp.json"), "mcpServers", jsonServer),
-      this.refreshCodexIfOwned(codexName, url)
-    ]);
+  /** 列出 Codex 配置中所有由本扩展托管的条目（名称以 netsuite-mcp- 开头且 URL 指向 loopback）。 */
+  public async listCodexManagedEntries(): Promise<{ name: string; url: string }[]> {
+    const source = await readTextIfExists(this.codexConfigPath);
+    if (!source) {
+      return [];
+    }
+    const regex = /^\[mcp_servers\.(netsuite-mcp-[^\]]+)\]/gm;
+    const entries: { name: string; url: string }[] = [];
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(source)) !== null) {
+      const name = match[1];
+      const table = tomlFindTable(source, name);
+      if (table && tomlIsOwnedServer(table.content)) {
+        const url = tomlExtractUrl(table.content);
+        if (url) {
+          entries.push({ name, url });
+        }
+      }
+    }
+    return entries;
+  }
+
+  /** 删除 Codex 配置中指定名称的条目（仅当 URL 指向 loopback 时）。 */
+  public async removeCodexServer(name: string): Promise<void> {
+    const source = await readTextIfExists(this.codexConfigPath);
+    if (!source) {
+      return;
+    }
+    const next = tomlRemoveServer(source, name);
+    if (next !== source) {
+      await atomicWriteFile(this.codexConfigPath, next.endsWith("\n") ? next : `${next}\n`);
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -168,17 +195,6 @@ export class McpConfigWriter {
   // Codex TOML 文件操作（~/.codex/config.toml）
   // -----------------------------------------------------------------------
 
-  private async removeCodexServer(name: string): Promise<void> {
-    const source = await readTextIfExists(this.codexConfigPath);
-    if (!source) {
-      return;
-    }
-    const next = tomlRemoveServer(source, name);
-    if (next !== source) {
-      await atomicWriteFile(this.codexConfigPath, next.endsWith("\n") ? next : `${next}\n`);
-    }
-  }
-
   private async removeAllCodexManaged(): Promise<void> {
     const source = await readTextIfExists(this.codexConfigPath);
     if (!source) {
@@ -227,14 +243,9 @@ export class McpConfigWriter {
   }
 }
 
-/** 工作区级 JSON 配置的 server 名称：netsuite-mcp-<accountId>-<access>。 */
-export function managedServerName(accountId: string, access: AccessMode): string {
-  return `netsuite-mcp-${accountId}-${access}`;
-}
-
-/** Codex 用户级配置的 server 名称：netsuite-mcp-<access>（不带 accountId，全局唯一）。 */
-export function codexServerName(access: AccessMode): string {
-  return `netsuite-mcp-${access}`;
+/** 工作区级 JSON 和 Codex 用户级配置统一使用 workspaceId 命名：netsuite-mcp-<workspaceId>。 */
+export function managedServerName(workspaceId: string): string {
+  return `netsuite-mcp-${workspaceId}`;
 }
 
 // ===========================================================================

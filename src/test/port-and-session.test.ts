@@ -68,31 +68,23 @@ describe("workspace port and OAuth-session isolation", () => {
     expect(parseAllocatedPorts(" 49153,49152,49153,invalid,0,65536 ")).toEqual([49152, 49153]);
   });
 
-  it("auto-starts verified read profiles while write authorization resets with a new session manager", async () => {
+  it("auto-starts verified profiles on initialize", async () => {
     const store = new EnvironmentStore(await workspace("session"));
-    const read = await store.createDraftProfile("9832121-sb1", "sandbox", "read");
-    const write = await store.createDraftProfile("9832121-sb1", "sandbox", "write");
-    await store.registerProfile(read.profile.id, "read-client");
-    await store.registerProfile(write.profile.id, "write-client");
-    await store.markVerified(read.profile.id);
-    await store.markVerified(write.profile.id);
+    const profile = await store.createDraftProfile("9832121-sb1", "sandbox");
+    await store.registerProfile(profile.profile.id, "client-id");
+    await store.markVerified(profile.profile.id);
 
     const proxy = fakeProxy();
     const manager = new ProfileManager(store, fakeOAuth(), {} as HealthCheckService, fakePortManager(), proxy as unknown as McpProxy);
     await manager.initialize();
     expect(proxy.start).toHaveBeenCalledWith(53123);
-    await manager.enableWrite(write.profile.id);
-    expect(manager.isWriteEnabled(write.profile.id)).toBe(true);
-
-    const restartedManager = new ProfileManager(store, fakeOAuth(), {} as HealthCheckService, fakePortManager(), fakeProxy() as unknown as McpProxy);
-    expect(restartedManager.isWriteEnabled(write.profile.id)).toBe(false);
   });
 
   it("reports a stable release-the-port error when the proxy loses the availability-check race", async () => {
     const store = new EnvironmentStore(await workspace("listen-race"));
-    const read = await store.createDraftProfile("9832121-sb1", "sandbox", "read");
-    await store.registerProfile(read.profile.id, "read-client");
-    await store.markVerified(read.profile.id);
+    const profile = await store.createDraftProfile("9832121-sb1", "sandbox");
+    await store.registerProfile(profile.profile.id, "read-client");
+    await store.markVerified(profile.profile.id);
     await store.setListenerPort(53123);
     const proxy = fakeProxy();
     proxy.start.mockRejectedValueOnce(Object.assign(new Error("address in use"), { code: "EADDRINUSE" }));
@@ -127,7 +119,7 @@ describe("workspace port and OAuth-session isolation", () => {
 
   it("uses the persistent loopback callback URL before opening browser authorization", async () => {
     const store = new EnvironmentStore(await workspace("callback"));
-    const created = await store.createDraftProfile("9832121-sb1", "sandbox", "read");
+    const created = await store.createDraftProfile("9832121-sb1", "sandbox");
     await store.registerProfile(created.profile.id, "public-client");
     const oauth = fakeOAuth();
     const proxy = fakeProxy();
@@ -139,44 +131,34 @@ describe("workspace port and OAuth-session isolation", () => {
     expect(oauth.authorize).toHaveBeenCalledWith(expect.objectContaining({ id: created.profile.id }), expect.objectContaining({ accountId: "9832121-sb1" }), "http://127.0.0.1:53123/oauth/callback", expect.any(Function));
   });
 
-  it("creates missing write profiles for environments that have read profiles", async () => {
-    const store = new EnvironmentStore(await workspace("ensure-write"));
-    const read = await store.createDraftProfile("9832121-sb1", "sandbox", "read");
-    await store.registerProfile(read.profile.id, "read-client");
-    const manager = new ProfileManager(store, fakeOAuth(), {} as HealthCheckService, fakePortManager(), fakeProxy() as unknown as McpProxy);
-
-    await manager.ensureWriteProfilesForReadEnvironments();
-
-    const profiles = await manager.listProfiles();
-    const writeProfiles = profiles.filter(({ profile }) => profile.access === "write");
-    expect(writeProfiles).toHaveLength(1);
-    expect(writeProfiles[0].environment.accountId).toBe("9832121-sb1");
-    expect(writeProfiles[0].profile.status).toBe("draft");
-  });
-
-  it("does not duplicate write profiles when one already exists", async () => {
-    const store = new EnvironmentStore(await workspace("ensure-write-existing"));
-    await store.createDraftProfile("9832121-sb1", "sandbox", "read");
-    await store.createDraftProfile("9832121-sb1", "sandbox", "write");
-    const manager = new ProfileManager(store, fakeOAuth(), {} as HealthCheckService, fakePortManager(), fakeProxy() as unknown as McpProxy);
-
-    await manager.ensureWriteProfilesForReadEnvironments();
-
-    const profiles = await manager.listProfiles();
-    const writeProfiles = profiles.filter(({ profile }) => profile.access === "write");
-    expect(writeProfiles).toHaveLength(1);
-  });
-
   it("delegates hasActiveSession to the OAuth client", async () => {
     const store = new EnvironmentStore(await workspace("has-session"));
-    const read = await store.createDraftProfile("9832121-sb1", "sandbox", "read");
-    await store.registerProfile(read.profile.id, "read-client");
+    const profile = await store.createDraftProfile("9832121-sb1", "sandbox");
+    await store.registerProfile(profile.profile.id, "read-client");
     const oauth = fakeOAuth();
     (oauth.hasActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(false);
     const manager = new ProfileManager(store, oauth, {} as HealthCheckService, fakePortManager(), fakeProxy() as unknown as McpProxy);
 
-    expect(manager.hasActiveSession(read.profile.id)).toBe(false);
-    expect(oauth.hasActiveSession).toHaveBeenCalledWith(read.profile.id);
+    expect(manager.hasActiveSession(profile.profile.id)).toBe(false);
+    expect(oauth.hasActiveSession).toHaveBeenCalledWith(profile.profile.id);
+  });
+
+  it("disconnects by invalidating tokens, reverting status, and stopping the proxy", async () => {
+    const store = new EnvironmentStore(await workspace("disconnect"));
+    const created = await store.createDraftProfile("9832121-sb1", "sandbox");
+    await store.registerProfile(created.profile.id, "client-id");
+    await store.markVerified(created.profile.id);
+    const oauth = fakeOAuth();
+    const proxy = fakeProxy();
+    const manager = new ProfileManager(store, oauth, {} as HealthCheckService, fakePortManager(), proxy as unknown as McpProxy);
+
+    await manager.disconnect();
+
+    expect(oauth.invalidate).toHaveBeenCalledWith(created.profile.id);
+    expect(proxy.stop).toHaveBeenCalledTimes(1);
+    const profile = (await store.findProfile(created.profile.id))?.profile;
+    expect(profile?.status).toBe("registered");
+    expect(profile?.verifiedAt).toBeUndefined();
   });
 });
 

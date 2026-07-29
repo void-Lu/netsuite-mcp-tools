@@ -13,8 +13,6 @@ export interface ProfileSummary {
 
 /** Coordinates persisted non-secret profile metadata with the in-memory OAuth session. */
 export class ProfileManager {
-  private readonly enabledWriteProfiles = new Set<string>();
-
   public constructor(
     private readonly store: EnvironmentStore,
     private readonly oauthClient: OAuthClient,
@@ -26,7 +24,7 @@ export class ProfileManager {
   public async initialize(): Promise<void> {
     await this.portManager.synchronizeAllocatedPorts();
     const profiles = await this.listProfiles();
-    if (profiles.some(({ profile }) => profile.access === "read" && profile.status === "verified")) {
+    if (profiles.some(({ profile }) => profile.status === "verified")) {
       await this.ensureProxyStarted();
     }
   }
@@ -36,9 +34,9 @@ export class ProfileManager {
     return Object.values(state.environments).flatMap((environment) => environment.profiles.map((profile) => ({ environment, profile })));
   }
 
-  public async createDraftProfile(accountIdInput: string, environmentType: EnvironmentType, access: "read" | "write"): Promise<ProfileSummary> {
+  public async createDraftProfile(accountIdInput: string, environmentType: EnvironmentType): Promise<ProfileSummary> {
     const accountId = normalizeAccountId(accountIdInput);
-    return this.store.createDraftProfile(accountId, environmentType, access);
+    return this.store.createDraftProfile(accountId, environmentType);
   }
 
   /**
@@ -60,9 +58,7 @@ export class ProfileManager {
     await this.healthCheck.verify(found.profile, endpoints);
     const verified = await this.store.markVerified(profileId);
     await this.portManager.recordSuccessfulConnection();
-    if (verified.access === "read") {
-      await this.ensureProxyStarted();
-    }
+    await this.ensureProxyStarted();
     return { environment: found.environment, profile: verified };
   }
 
@@ -76,53 +72,40 @@ export class ProfileManager {
     await this.healthCheck.verify(found.profile, buildNetSuiteEndpoints(found.environment.accountId));
     const verified = await this.store.markVerified(profileId);
     await this.portManager.recordSuccessfulConnection();
-    if (verified.access === "read") {
-      await this.ensureProxyStarted();
-    }
+    await this.ensureProxyStarted();
     return { environment: found.environment, profile: verified };
   }
 
-  public async enableWrite(profileId: string): Promise<void> {
-    const found = await this.requireProfile(profileId);
-    if (found.profile.access !== "write") {
-      throw new NetSuiteMcpError("not-write-profile", "所选档案不是写入连接。请先配置独立的 write profile。");
+  public async disconnect(): Promise<void> {
+    const profiles = await this.listProfiles();
+    for (const { profile } of profiles) {
+      if (profile.status === "verified") {
+        this.oauthClient.invalidate(profile.id);
+        await this.store.markRegistered(profile.id);
+      }
     }
-    if (found.profile.status !== "verified") {
-      throw new NetSuiteMcpError("authorization-required", "请先运行“NetSuite MCP：测试连接”并在浏览器中完成此写入档案的授权。");
-    }
-    this.enabledWriteProfiles.add(profileId);
-    await this.ensureProxyStarted();
-  }
-
-  public disableWrite(profileId: string): void {
-    this.enabledWriteProfiles.delete(profileId);
-  }
-
-  public isWriteEnabled(profileId: string): boolean {
-    return this.enabledWriteProfiles.has(profileId);
-  }
-
-  /** profile 是否在当前会话中持有内存 token。用于状态栏区分"磁盘 verified"与"运行时可用"。 */
-  public hasActiveSession(profileId: string): boolean {
-    return this.oauthClient.hasActiveSession(profileId);
+    await this.proxy.stop();
   }
 
   public async remove(profileId: string): Promise<ProfileSummary> {
-    this.enabledWriteProfiles.delete(profileId);
     this.oauthClient.invalidate(profileId);
     return this.store.removeProfile(profileId);
   }
 
   public async resolveProxyRoute(profileId: string): Promise<ProxyRoute | undefined> {
     const found = await this.store.findProfile(profileId);
-    if (!found || found.profile.status !== "verified") {
+    if (!found || found.profile.status !== "verified" || !this.oauthClient.hasActiveSession(profileId)) {
       return undefined;
     }
     return {
       profile: found.profile,
-      endpoints: buildNetSuiteEndpoints(found.environment.accountId),
-      enabled: found.profile.access === "read" || this.enabledWriteProfiles.has(profileId)
+      endpoints: buildNetSuiteEndpoints(found.environment.accountId)
     };
+  }
+
+  /** profile 是否在当前会话中持有内存 token。用于状态栏区分"磁盘 verified"与"运行时可用"。 */
+  public hasActiveSession(profileId: string): boolean {
+    return this.oauthClient.hasActiveSession(profileId);
   }
 
   public async getMcpUrl(profileId: string): Promise<string> {
@@ -144,30 +127,7 @@ export class ProfileManager {
     return redirectUri;
   }
 
-  /**
-   * 为每个已有 read profile 但缺少 write profile 的 environment 自动创建 draft
-   * write profile。启用写入连接前调用，确保用户能在下拉框中看到 write 选项。
-   */
-  public async ensureWriteProfilesForReadEnvironments(): Promise<void> {
-    const profiles = await this.listProfiles();
-    const environmentsWithRead = new Map<string, EnvironmentType>();
-    for (const { environment } of profiles) {
-      if (environment.profiles.some((p) => p.access === "read")) {
-        environmentsWithRead.set(environment.accountId, environment.environmentType);
-      }
-    }
-    for (const { environment } of profiles) {
-      if (environment.profiles.some((p) => p.access === "write")) {
-        environmentsWithRead.delete(environment.accountId);
-      }
-    }
-    for (const [accountId, environmentType] of environmentsWithRead) {
-      await this.store.createDraftProfile(accountId, environmentType, "write");
-    }
-  }
-
   public async stop(): Promise<void> {
-    this.enabledWriteProfiles.clear();
     this.oauthClient.clear();
     await this.proxy.stop();
   }

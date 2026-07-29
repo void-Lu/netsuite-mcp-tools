@@ -14,8 +14,8 @@ describe("EnvironmentStore", () => {
   it("keeps Public Client IDs for different account IDs in independent profiles", async () => {
     const root = await createWorkspace();
     const store = new EnvironmentStore(root);
-    const sandbox = await store.createDraftProfile("9832121-sb1", "sandbox", "read");
-    const production = await store.createDraftProfile("9832121", "production", "read");
+    const sandbox = await store.createDraftProfile("9832121-sb1", "sandbox");
+    const production = await store.createDraftProfile("9832121", "production");
     await store.registerProfile(sandbox.profile.id, "sandbox-client");
     await store.registerProfile(production.profile.id, "production-client");
 
@@ -32,8 +32,8 @@ describe("EnvironmentStore", () => {
 
   it("refuses to silently change an existing environment type", async () => {
     const store = new EnvironmentStore(await createWorkspace());
-    await store.createDraftProfile("9832121", "production", "read");
-    await expect(store.createDraftProfile("9832121", "sandbox", "read")).rejects.toThrow("环境标签");
+    await store.createDraftProfile("9832121", "production");
+    await expect(store.createDraftProfile("9832121", "sandbox")).rejects.toThrow("环境标签");
   });
 
   it("creates an editable client-only template without token, secret or certificate fields", async () => {
@@ -43,10 +43,10 @@ describe("EnvironmentStore", () => {
     expect(await store.ensureConfigurationTemplate()).toBe("unchanged");
 
     const profile = (await store.getState()).environments.YOUR_NETSUITE_ACCOUNT_ID.profiles[0];
-    expect(profile).toMatchObject({ access: "read", status: "draft", clientId: "" });
-    expect(Object.keys(profile)).toEqual(["id", "access", "status", "clientId", "createdAt"]);
+    expect(profile).toMatchObject({ status: "draft", clientId: "" });
+    expect(Object.keys(profile)).toEqual(["id", "status", "clientId", "createdAt"]);
     const persisted = await readFile(store.paths.environmentFile, "utf8");
-    expect(JSON.parse(persisted)).toMatchObject({ schemaVersion: 2, listener: { host: "127.0.0.1", port: 0 }, allocatedPorts: [] });
+    expect(JSON.parse(persisted)).toMatchObject({ schemaVersion: 3, listener: { host: "127.0.0.1", port: 0 }, allocatedPorts: [] });
     expect(persisted).not.toMatch(/certificate|private.?key|access.?token|refresh.?token|client.?secret/i);
   });
 
@@ -56,7 +56,7 @@ describe("EnvironmentStore", () => {
     await mkdir(store.paths.dataDirectory, { recursive: true });
     await writeFile(store.paths.environmentFile, " \r\n\t ");
     expect(await store.ensureConfigurationTemplate()).toBe("initialized");
-    expect((await store.getState()).environments.YOUR_NETSUITE_ACCOUNT_ID.profiles.map(({ access }) => access)).toEqual(["read", "write"]);
+    expect((await store.getState()).environments.YOUR_NETSUITE_ACCOUNT_ID.profiles).toHaveLength(1);
   });
 
   it("safely completes a partial schema while retaining a manually entered Public Client ID", async () => {
@@ -64,12 +64,12 @@ describe("EnvironmentStore", () => {
     const store = new EnvironmentStore(root);
     await mkdir(store.paths.dataDirectory, { recursive: true });
     await writeFile(store.paths.environmentFile, JSON.stringify({
-      environments: { "9832121-sb1": { profiles: [{ access: "read", clientId: "existing-client-id" }] } }
+      environments: { "9832121-sb1": { profiles: [{ clientId: "existing-client-id" }] } }
     }));
 
     expect(await store.ensureConfigurationTemplate()).toBe("completed");
     const profile = (await store.getState()).environments["9832121-sb1"].profiles[0];
-    expect(profile).toMatchObject({ access: "read", clientId: "existing-client-id", status: "draft" });
+    expect(profile).toMatchObject({ clientId: "existing-client-id", status: "draft" });
     expect(profile.id).toMatch(/^[0-9a-f-]{36}$/i);
     expect(Date.parse(profile.createdAt)).toBeGreaterThan(0);
   });
@@ -98,10 +98,69 @@ describe("EnvironmentStore", () => {
 
     expect(await store.ensureConfigurationTemplate()).toBe("completed");
     const persisted = await readFile(store.paths.environmentFile, "utf8");
-    expect(JSON.parse(persisted)).toMatchObject({ schemaVersion: 2 });
+    expect(JSON.parse(persisted)).toMatchObject({ schemaVersion: 3 });
     expect(JSON.parse(persisted).allocatedPorts).toEqual([]);
     expect(persisted).toContain("legacy-client");
-    expect(persisted).not.toMatch(/certificate|privateKey|expiresAt/);
+    expect(persisted).not.toMatch(/certificate|privateKey|expiresAt|access/);
+  });
+
+  it("migrates v2 read/write profiles by selecting the verified one and removing access", async () => {
+    const root = await createWorkspace();
+    const store = new EnvironmentStore(root);
+    const v2 = {
+      schemaVersion: 2,
+      workspaceId: "workspace-id",
+      listener: { host: "127.0.0.1", port: 53123 },
+      allocatedPorts: [53123],
+      environments: {
+        "9832121-sb1": {
+          accountId: "9832121-sb1",
+          environmentType: "sandbox",
+          profiles: [
+            { id: "read-profile", access: "read", status: "verified", clientId: "read-client", createdAt: "2026-07-28T00:00:00.000Z", verifiedAt: "2026-07-28T12:00:00.000Z" },
+            { id: "write-profile", access: "write", status: "draft", clientId: "write-client", createdAt: "2026-07-28T00:00:00.000Z" }
+          ]
+        }
+      }
+    };
+    await mkdir(store.paths.dataDirectory, { recursive: true });
+    await writeFile(store.paths.environmentFile, JSON.stringify(v2));
+
+    expect(await store.ensureConfigurationTemplate()).toBe("completed");
+    const state = await store.getState();
+    expect(state.schemaVersion).toBe(3);
+    const profiles = state.environments["9832121-sb1"].profiles;
+    expect(profiles).toHaveLength(1);
+    expect(profiles[0]).toMatchObject({ id: "read-profile", status: "verified", clientId: "read-client" });
+    expect(profiles[0]).not.toHaveProperty("access");
+  });
+
+  it("migrates v2 by preferring a profile with clientId when none is verified", async () => {
+    const root = await createWorkspace();
+    const store = new EnvironmentStore(root);
+    const v2 = {
+      schemaVersion: 2,
+      workspaceId: "workspace-id",
+      listener: { host: "127.0.0.1", port: 53123 },
+      allocatedPorts: [],
+      environments: {
+        "9832121-sb1": {
+          accountId: "9832121-sb1",
+          environmentType: "sandbox",
+          profiles: [
+            { id: "read-profile", access: "read", status: "draft", clientId: "", createdAt: "2026-07-28T00:00:00.000Z" },
+            { id: "write-profile", access: "write", status: "draft", clientId: "write-client", createdAt: "2026-07-28T00:00:00.000Z" }
+          ]
+        }
+      }
+    };
+    await mkdir(store.paths.dataDirectory, { recursive: true });
+    await writeFile(store.paths.environmentFile, JSON.stringify(v2));
+
+    await store.ensureConfigurationTemplate();
+    const profiles = (await store.getState()).environments["9832121-sb1"].profiles;
+    expect(profiles).toHaveLength(1);
+    expect(profiles[0]).toMatchObject({ id: "write-profile", clientId: "write-client" });
   });
 
   it("loads a pre-allocation v2 environment and persists the shared port index on the next save", async () => {
@@ -109,7 +168,7 @@ describe("EnvironmentStore", () => {
     const store = new EnvironmentStore(root);
     await mkdir(store.paths.dataDirectory, { recursive: true });
     await writeFile(store.paths.environmentFile, JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
       workspaceId: "workspace-id",
       listener: { host: "127.0.0.1", port: 53123 },
       environments: {}
@@ -124,7 +183,7 @@ describe("EnvironmentStore", () => {
     const root = await createWorkspace();
     await writeFile(join(root, ".gitignore"), "/.netsuite-mcp/\n/.vscode/mcp.json\n/.mcp.json\nnode_modules/\n");
     const store = new EnvironmentStore(root);
-    await store.createDraftProfile("9832121-sb1", "sandbox", "read");
+    await store.createDraftProfile("9832121-sb1", "sandbox");
 
     expect(await readFile(join(root, ".gitignore"), "utf8")).toBe("/.vscode/mcp.json\n/.mcp.json\nnode_modules/\n/.netsuite-mcp/logs/\n");
   });
@@ -132,7 +191,7 @@ describe("EnvironmentStore", () => {
   it("rejects unknown sensitive fields without overwriting the original file", async () => {
     const root = await createWorkspace();
     const store = new EnvironmentStore(root);
-    const raw = JSON.stringify({ environments: { "9832121-sb1": { profiles: [{ access: "read", clientId: "keep-client", accessToken: "must-not-persist" }] } } }, null, 2);
+    const raw = JSON.stringify({ environments: { "9832121-sb1": { profiles: [{ clientId: "keep-client", accessToken: "must-not-persist" }] } } }, null, 2);
     await mkdir(store.paths.dataDirectory, { recursive: true });
     await writeFile(store.paths.environmentFile, raw);
     await expect(store.ensureConfigurationTemplate()).rejects.toThrow("结构不受当前扩展支持");
@@ -147,6 +206,20 @@ describe("EnvironmentStore", () => {
     await expect(store.ensureConfigurationTemplate()).rejects.toThrow("不是有效 JSON");
     await writeFile(store.paths.environmentFile, JSON.stringify({ listener: { host: "127.0.0.1", port: "53123" } }));
     await expect(store.ensureConfigurationTemplate()).rejects.toThrow("结构不受当前扩展支持");
+  });
+
+  it("reverts a verified profile to registered on markRegistered", async () => {
+    const root = await createWorkspace();
+    const store = new EnvironmentStore(root);
+    const created = await store.createDraftProfile("9832121-sb1", "sandbox");
+    await store.registerProfile(created.profile.id, "client-id");
+    await store.markVerified(created.profile.id);
+    expect((await store.findProfile(created.profile.id))?.profile.status).toBe("verified");
+
+    await store.markRegistered(created.profile.id);
+    const profile = (await store.findProfile(created.profile.id))?.profile;
+    expect(profile?.status).toBe("registered");
+    expect(profile?.verifiedAt).toBeUndefined();
   });
 });
 

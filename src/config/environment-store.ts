@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import {
-  AccessMode,
   ConnectionProfile,
   ENVIRONMENT_SCHEMA_VERSION,
   EnvironmentState,
@@ -19,7 +18,8 @@ const TOP_LEVEL_FIELDS = ["schemaVersion", "workspaceId", "listener", "allocated
 const PRE_ALLOCATION_TOP_LEVEL_FIELDS = ["schemaVersion", "workspaceId", "listener", "environments"] as const;
 const LISTENER_FIELDS = ["host", "port"] as const;
 const ENVIRONMENT_FIELDS = ["accountId", "environmentType", "profiles"] as const;
-const PROFILE_FIELDS = ["id", "access", "status", "clientId", "createdAt", "verifiedAt"] as const;
+const PROFILE_FIELDS = ["id", "status", "clientId", "createdAt", "verifiedAt"] as const;
+const V2_PROFILE_FIELDS = ["id", "access", "status", "clientId", "createdAt", "verifiedAt"] as const;
 const LEGACY_PROFILE_FIELDS = [
   "id", "access", "status", "clientId", "certificateId", "publicCertificatePath", "privateKeyPath", "expiresAt", "createdAt", "verifiedAt"
 ] as const;
@@ -105,15 +105,14 @@ export class EnvironmentStore {
 
   public async createDraftProfile(
     accountId: string,
-    environmentType: EnvironmentType,
-    access: AccessMode
+    environmentType: EnvironmentType
   ): Promise<{ environment: NetSuiteEnvironment; profile: ConnectionProfile }> {
     const state = await this.load();
     const environment = state.environments[accountId] ?? { accountId, environmentType, profiles: [] };
     if (environment.environmentType !== environmentType) {
       throw new NetSuiteMcpError("environment-type-mismatch", "该 accountId 已使用不同的环境标签，请先确认现有配置。");
     }
-    const profile = this.createDraftProfileRecord(access);
+    const profile = this.createDraftProfileRecord();
     environment.profiles.push(profile);
     state.environments[accountId] = environment;
     await this.save();
@@ -130,6 +129,13 @@ export class EnvironmentStore {
 
   public async markVerified(profileId: string): Promise<ConnectionProfile> {
     return this.updateProfile(profileId, (profile) => ({ ...profile, status: "verified", verifiedAt: new Date().toISOString() }));
+  }
+
+  public async markRegistered(profileId: string): Promise<ConnectionProfile> {
+    return this.updateProfile(profileId, (profile) => {
+      const { verifiedAt: _, ...rest } = profile;
+      return { ...rest, status: "registered" };
+    });
   }
 
   public async setListenerPort(port: number): Promise<void> {
@@ -215,17 +221,17 @@ export class EnvironmentStore {
     state.environments[TEMPLATE_ACCOUNT_ID] = {
       accountId: TEMPLATE_ACCOUNT_ID,
       environmentType: "sandbox",
-      profiles: [this.createTemplateProfile("read"), this.createTemplateProfile("write")]
+      profiles: [this.createTemplateProfile()]
     };
     return state;
   }
 
-  private createTemplateProfile(access: AccessMode): ConnectionProfile {
-    return { ...this.createDraftProfileRecord(access), clientId: "" };
+  private createTemplateProfile(): ConnectionProfile {
+    return { ...this.createDraftProfileRecord(), clientId: "" };
   }
 
-  private createDraftProfileRecord(access: AccessMode): ConnectionProfile {
-    return { id: randomUUID(), access, status: "draft", createdAt: new Date().toISOString() };
+  private createDraftProfileRecord(): ConnectionProfile {
+    return { id: randomUUID(), status: "draft", createdAt: new Date().toISOString() };
   }
 
   private completeEnvironmentState(content: string): { state: EnvironmentState; changed: boolean } {
@@ -330,7 +336,7 @@ export class EnvironmentStore {
   private completeProfiles(value: unknown, markChanged: () => void): ConnectionProfile[] {
     if (value === undefined || (Array.isArray(value) && value.length === 0)) {
       markChanged();
-      return [this.createTemplateProfile("read"), this.createTemplateProfile("write")];
+      return [this.createTemplateProfile()];
     }
     if (!Array.isArray(value)) {
       throw invalidEnvironmentSchema();
@@ -342,14 +348,22 @@ export class EnvironmentStore {
     if (!isRecord(value)) {
       throw invalidEnvironmentSchema();
     }
+    if (hasOnlyKeys(value, V2_PROFILE_FIELDS)) {
+      markChanged();
+      const id = readDerivedString(value, "id", randomUUID(), markChanged);
+      const status = value.status === undefined || value.status === "" ? (markChanged(), "draft") : isProfileStatus(value.status) ? value.status : failSchema();
+      const clientId = readOptionalString(value, "clientId", markChanged);
+      const createdAt = readDerivedString(value, "createdAt", new Date().toISOString(), markChanged);
+      const verifiedAt = readOptionalTimestamp(value, "verifiedAt");
+      return { id, status, clientId, createdAt, ...(verifiedAt ? { verifiedAt } : {}) };
+    }
     assertOnlyKnownFields(value, PROFILE_FIELDS);
     const id = readDerivedString(value, "id", randomUUID(), markChanged);
-    const access = value.access === undefined ? (markChanged(), "read") : isAccessMode(value.access) ? value.access : failSchema();
     const status = value.status === undefined || value.status === "" ? (markChanged(), "draft") : isProfileStatus(value.status) ? value.status : failSchema();
     const clientId = readOptionalString(value, "clientId", markChanged);
     const createdAt = readDerivedString(value, "createdAt", new Date().toISOString(), markChanged);
     const verifiedAt = readOptionalTimestamp(value, "verifiedAt");
-    return { id, access, status, clientId, createdAt, ...(verifiedAt ? { verifiedAt } : {}) };
+    return { id, status, clientId, createdAt, ...(verifiedAt ? { verifiedAt } : {}) };
   }
 
   private async ensureGitIgnore(): Promise<void> {
@@ -368,6 +382,9 @@ function parseEnvironmentState(content: string): EnvironmentState {
   const raw = parseEnvironmentDocument(content);
   if (isRecord(raw) && raw.schemaVersion === 1) {
     return migrateLegacyState(raw);
+  }
+  if (isRecord(raw) && raw.schemaVersion === 2) {
+    return migrateV2State(raw);
   }
   if (isEnvironmentState(raw)) {
     return raw;
@@ -401,17 +418,68 @@ function migrateLegacyState(raw: Record<string, unknown>): EnvironmentState {
       {
         accountId: environment.accountId,
         environmentType: environment.environmentType,
-        profiles: environment.profiles.map((profile) => ({
+        profiles: selectSingleProfile(environment.profiles.map((profile) => ({
           id: profile.id,
-          access: profile.access,
           status: profile.status,
           ...(profile.clientId === undefined ? {} : { clientId: profile.clientId }),
           createdAt: profile.createdAt,
           ...(profile.verifiedAt === undefined ? {} : { verifiedAt: profile.verifiedAt })
-        }))
+        })))
       }
     ]))
   };
+}
+
+/** 将 v2（含 read/write access 区分）迁移到 v3：每个 environment 只保留一个 profile，移除 access 字段。 */
+function migrateV2State(raw: Record<string, unknown>): EnvironmentState {
+  if (!isV2EnvironmentState(raw)) {
+    throw invalidEnvironmentSchema();
+  }
+  const v2State = raw as unknown as {
+    schemaVersion: 2;
+    workspaceId: string;
+    listener: EnvironmentState["listener"];
+    allocatedPorts: number[];
+    environments: Record<string, NetSuiteEnvironment & { profiles: Array<ConnectionProfile & { access: string }> }>;
+  };
+  return {
+    schemaVersion: ENVIRONMENT_SCHEMA_VERSION,
+    workspaceId: v2State.workspaceId,
+    listener: v2State.listener,
+    allocatedPorts: v2State.allocatedPorts,
+    environments: Object.fromEntries(Object.entries(v2State.environments).map(([accountId, environment]) => [
+      accountId,
+      {
+        accountId: environment.accountId,
+        environmentType: environment.environmentType,
+        profiles: selectSingleProfile(environment.profiles.map((profile) => ({
+          id: profile.id,
+          status: profile.status,
+          ...(profile.clientId === undefined ? {} : { clientId: profile.clientId }),
+          createdAt: profile.createdAt,
+          ...(profile.verifiedAt === undefined ? {} : { verifiedAt: profile.verifiedAt })
+        })))
+      }
+    ]))
+  };
+}
+
+/**
+ * 从 v1/v2 的多个 profile（可能含 read + write）中选择保留一个：
+ * 1. 优先 verified 的
+ * 2. 若都 verified 或都未 verified，优先有 clientId 的
+ * 3. 若都无 clientId，取第一个
+ */
+function selectSingleProfile(profiles: ConnectionProfile[]): ConnectionProfile[] {
+  if (profiles.length <= 1) {
+    return profiles;
+  }
+  const verified = profiles.find((p) => p.status === "verified");
+  if (verified) {
+    return [verified];
+  }
+  const withClientId = profiles.find((p) => p.clientId?.trim());
+  return [withClientId ?? profiles[0]];
 }
 
 function invalidEnvironmentSchema(): NetSuiteMcpError {
@@ -490,6 +558,13 @@ function isPreAllocationEnvironmentState(value: unknown): value is PreAllocation
     Object.entries(value.environments).every(([accountId, environment]) => isEnvironment(accountId, environment));
 }
 
+/** v2 结构验证：schemaVersion === 2，profile 含 access 字段。 */
+function isV2EnvironmentState(value: Record<string, unknown>): boolean {
+  return hasOnlyKeys(value, TOP_LEVEL_FIELDS) && value.schemaVersion === 2 && typeof value.workspaceId === "string" &&
+    isListener(value.listener) && isAllocatedPorts(value.allocatedPorts) && isRecord(value.environments) &&
+    Object.entries(value.environments).every(([accountId, environment]) => isV2Environment(accountId, environment));
+}
+
 function isLegacyEnvironmentState(value: Record<string, unknown>): boolean {
   return hasOnlyKeys(value, TOP_LEVEL_FIELDS) && value.schemaVersion === 1 && typeof value.workspaceId === "string" &&
     isListener(value.listener) && isRecord(value.environments) &&
@@ -505,6 +580,11 @@ function isEnvironment(accountId: string, value: unknown): value is NetSuiteEnvi
     isEnvironmentType(value.environmentType) && Array.isArray(value.profiles) && value.profiles.every(isProfile);
 }
 
+function isV2Environment(accountId: string, value: unknown): boolean {
+  return isRecord(value) && hasOnlyKeys(value, ENVIRONMENT_FIELDS) && value.accountId === accountId &&
+    isEnvironmentType(value.environmentType) && Array.isArray(value.profiles) && value.profiles.every(isV2Profile);
+}
+
 function isLegacyEnvironment(accountId: string, value: unknown): value is NetSuiteEnvironment {
   return isRecord(value) && hasOnlyKeys(value, ENVIRONMENT_FIELDS) && value.accountId === accountId &&
     isEnvironmentType(value.environmentType) && Array.isArray(value.profiles) && value.profiles.every(isLegacyProfile);
@@ -512,14 +592,21 @@ function isLegacyEnvironment(accountId: string, value: unknown): value is NetSui
 
 function isProfile(value: unknown): value is ConnectionProfile {
   return isRecord(value) && hasOnlyKeys(value, PROFILE_FIELDS) && typeof value.id === "string" &&
-    isAccessMode(value.access) && isProfileStatus(value.status) &&
+    isProfileStatus(value.status) &&
+    (value.clientId === undefined || typeof value.clientId === "string") && typeof value.createdAt === "string" &&
+    (value.verifiedAt === undefined || typeof value.verifiedAt === "string");
+}
+
+function isV2Profile(value: unknown): value is ConnectionProfile & { access: string } {
+  return isRecord(value) && hasOnlyKeys(value, V2_PROFILE_FIELDS) && typeof value.id === "string" &&
+    typeof value.access === "string" && isProfileStatus(value.status) &&
     (value.clientId === undefined || typeof value.clientId === "string") && typeof value.createdAt === "string" &&
     (value.verifiedAt === undefined || typeof value.verifiedAt === "string");
 }
 
 function isLegacyProfile(value: unknown): value is ConnectionProfile {
   return isRecord(value) && hasOnlyKeys(value, LEGACY_PROFILE_FIELDS) && typeof value.id === "string" &&
-    isAccessMode(value.access) && isProfileStatus(value.status) &&
+    typeof value.access === "string" && isProfileStatus(value.status) &&
     (value.clientId === undefined || typeof value.clientId === "string") &&
     (value.certificateId === undefined || typeof value.certificateId === "string") &&
     typeof value.publicCertificatePath === "string" && typeof value.privateKeyPath === "string" &&
@@ -555,14 +642,10 @@ function isUnsafeObjectKey(value: string): boolean {
   return value === "__proto__" || value === "constructor" || value === "prototype";
 }
 
-function isAccessMode(value: unknown): value is AccessMode {
-  return value === "read" || value === "write";
-}
-
 function isEnvironmentType(value: unknown): value is EnvironmentType {
   return value === "sandbox" || value === "production";
 }
 
 function isProfileStatus(value: unknown): value is ConnectionProfile["status"] {
-  return value === "draft" || value === "registered" || value === "verified" || value === "active";
+  return value === "draft" || value === "registered" || value === "verified";
 }

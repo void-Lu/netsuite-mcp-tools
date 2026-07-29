@@ -84,7 +84,16 @@ export class OAuthClient {
   public beginAuthorization(profile: ConnectionProfile, endpoints: NetSuiteEndpoints, redirectUri: string): AuthorizationRequest {
     const clientId = requireClientId(profile);
     assertLoopbackRedirectUri(redirectUri);
-    this.invalidate(profile.id);
+
+    // 清理同 profileId 的旧 pending authorization，避免连续点击"重新授权"产生竞态
+    for (const [, pending] of this.pendingAuthorizations) {
+      if (pending.profileId === profile.id) {
+        this.settleAuthorization(pending, new NetSuiteMcpError(
+          "authorization-superseded",
+          "已开始新的授权流程，之前的授权已被取代。"
+        ));
+      }
+    }
 
     const verifier = randomBytes(PKCE_VERIFIER_BYTES).toString("base64url");
     const state = randomBytes(24).toString("base64url");

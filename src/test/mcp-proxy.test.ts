@@ -14,29 +14,12 @@ afterEach(async () => {
 });
 
 describe("McpProxy local boundary", () => {
-  it("refuses a disabled route without trying to contact NetSuite", async () => {
+  it("refuses an unavailable route without trying to contact NetSuite", async () => {
     const root = await mkdtemp(join(tmpdir(), "netsuite-mcp-proxy-"));
     roots.push(root);
-    const profile: ConnectionProfile = {
-      id: "read-profile",
-      access: "read",
-      status: "verified",
-      clientId: "client",
-      createdAt: "2026-07-28T00:00:00.000Z"
-    };
     const proxy = new McpProxy(
       {} as OAuthClient,
-      async () => ({
-        profile,
-        endpoints: {
-          accountId: "9832121-sb1",
-          host: "9832121-sb1.suitetalk.api.netsuite.com",
-          authorizationUrl: "https://9832121-sb1.app.netsuite.com/app/login/oauth2/authorize.nl",
-          tokenUrl: "https://example.invalid/token",
-          mcpUrl: "https://example.invalid/mcp"
-        },
-        enabled: false
-      }),
+      async () => undefined,
       new RedactedLogger(join(root, "logs"))
     );
     const port = await proxy.start(0);
@@ -69,10 +52,10 @@ describe("McpProxy local boundary", () => {
   it("returns a safe browser-authorization instruction when a proxy route has no in-memory token", async () => {
     const root = await mkdtemp(join(tmpdir(), "netsuite-mcp-proxy-"));
     roots.push(root);
-    const profile: ConnectionProfile = { id: "needs-auth", access: "read", status: "verified", clientId: "client", createdAt: "2026-07-28T00:00:00.000Z" };
+    const profile: ConnectionProfile = { id: "needs-auth", status: "verified", clientId: "client", createdAt: "2026-07-28T00:00:00.000Z" };
     const oauth = {
       getAccessToken: vi.fn(async () => {
-        throw new NetSuiteMcpError("authorization-required", "尚未在本次 VS Code 会话中授权 NetSuite。请运行“NetSuite MCP：测试连接”并在浏览器中完成登录。");
+        throw new NetSuiteMcpError("authorization-required", "尚未在本次 VS Code 会话中授权 NetSuite。请运行“NetSuite MCP：启动连接”并在浏览器中完成登录。");
       })
     } as unknown as OAuthClient;
     const proxy = new McpProxy(oauth, async () => ({
@@ -83,14 +66,13 @@ describe("McpProxy local boundary", () => {
         authorizationUrl: "https://9832121-sb1.app.netsuite.com/app/login/oauth2/authorize.nl",
         tokenUrl: "https://example.invalid/token",
         mcpUrl: "https://example.invalid/mcp"
-      },
-      enabled: true
+      }
     }), new RedactedLogger(join(root, "logs")));
     const port = await proxy.start(0);
 
     const response = await fetch(`http://127.0.0.1:${port}/needs-auth/mcp`);
     expect(response.status).toBe(503);
-    await expect(response.json()).resolves.toMatchObject({ error: expect.stringContaining("测试连接") });
+    await expect(response.json()).resolves.toMatchObject({ error: expect.stringContaining("启动连接") });
     await proxy.stop();
   });
 });

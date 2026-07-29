@@ -6,7 +6,6 @@ import { OAuthClient } from "../net/oauth-client";
 
 const profile: ConnectionProfile = {
   id: "test-profile",
-  access: "read",
   status: "registered",
   clientId: "public-client-id",
   createdAt: "2026-07-28T00:00:00.000Z"

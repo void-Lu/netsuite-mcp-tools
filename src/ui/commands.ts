@@ -1,14 +1,13 @@
 import * as vscode from "vscode";
 import { EnvironmentStore } from "../config/environment-store";
-import { codexServerName, McpConfigWriter } from "../config/mcp-config-writer";
-import { NetSuiteMcpError } from "../domain/types";
+import { McpConfigWriter } from "../config/mcp-config-writer";
+import { AgentTarget, NetSuiteMcpError } from "../domain/types";
 import { ProfileManager, ProfileSummary } from "../services/profile-manager";
 
 export type BarState =
   | { kind: "needsFix" }
   | { kind: "unconfigured"; hasValidConfig: boolean; profiles: ProfileSummary[] }
-  | { kind: "connected"; profiles: ProfileSummary[] }
-  | { kind: "writeEnabled"; profiles: ProfileSummary[] };
+  | { kind: "connected"; profiles: ProfileSummary[] };
 
 interface ProfilePickItem extends vscode.QuickPickItem {
   summary: ProfileSummary;
@@ -16,6 +15,10 @@ interface ProfilePickItem extends vscode.QuickPickItem {
 
 interface ActionItem extends vscode.QuickPickItem {
   action: () => Promise<void>;
+}
+
+interface AgentPickItem extends vscode.QuickPickItem {
+  target: AgentTarget;
 }
 
 export function registerCommands(
@@ -29,10 +32,9 @@ export function registerCommands(
   context.subscriptions.push(
     vscode.commands.registerCommand("netsuiteMcp.statusBarClick", () => runCommand(() => handleStatusBarClick(computeState, manager, store, configWriter, refreshStatus))),
     vscode.commands.registerCommand("netsuiteMcp.configureProfile", () => runCommand(() => configureProfile(manager, store))),
-    vscode.commands.registerCommand("netsuiteMcp.testConnection", () => runCommand(() => testConnection(manager, refreshStatus))),
-    vscode.commands.registerCommand("netsuiteMcp.generateClientConfig", () => runCommand(() => generateClientConfig(manager, configWriter))),
-    vscode.commands.registerCommand("netsuiteMcp.enableWrite", () => runCommand(() => enableWrite(manager, store, refreshStatus))),
-    vscode.commands.registerCommand("netsuiteMcp.disableWrite", () => runCommand(() => disableWrite(manager, refreshStatus)))
+    vscode.commands.registerCommand("netsuiteMcp.startConnection", () => runCommand(() => startConnection(manager, refreshStatus))),
+    vscode.commands.registerCommand("netsuiteMcp.generateClientConfig", () => runCommand(() => generateClientConfig(manager, store, configWriter))),
+    vscode.commands.registerCommand("netsuiteMcp.disconnect", () => runCommand(() => disconnect(manager, refreshStatus)))
   );
 }
 
@@ -59,7 +61,6 @@ async function handleStatusBarClick(
       await showActionMenu(state, manager, store, configWriter, refreshStatus);
       break;
     case "connected":
-    case "writeEnabled":
       await showActionMenu(state, manager, store, configWriter, refreshStatus);
       break;
   }
@@ -83,10 +84,10 @@ async function showActionMenu(
       const hasTestableProfile = state.profiles.some(({ profile }) => profile.clientId?.trim());
       items.push({ label: "打开连接配置", action: () => configureProfile(manager, store) });
       if (hasTestableProfile) {
-        items.push({ label: "测试连接", action: () => testConnection(manager, refreshStatus) });
+        items.push({ label: "启动连接", action: () => startConnection(manager, refreshStatus) });
       } else {
         items.push({
-          label: "测试连接",
+          label: "启动连接",
           description: "(尚未配置 Client ID)",
           action: async () => {
             await vscode.window.showInformationMessage("尚未配置 Client ID。请先在 environment.json 中填写 Public Client ID 后再次点击。");
@@ -97,17 +98,9 @@ async function showActionMenu(
       break;
     }
     case "connected": {
-      items.push({ label: "重新授权", action: () => testConnection(manager, refreshStatus) });
-      items.push({ label: "生成 Agent 配置", action: () => generateClientConfig(manager, configWriter) });
-      items.push({ label: "启用写入连接", action: () => enableWrite(manager, store, refreshStatus) });
-      items.push({ label: "打开 environment.json", action: () => openEnvironmentFile(store) });
-      items.push({ label: "清理 MCP 配置", action: () => cleanMcpConfig(configWriter) });
-      break;
-    }
-    case "writeEnabled": {
-      items.push({ label: "重新授权", action: () => testConnection(manager, refreshStatus) });
-      items.push({ label: "生成 Agent 配置", action: () => generateClientConfig(manager, configWriter) });
-      items.push({ label: "关闭写入连接", action: () => disableWrite(manager, refreshStatus) });
+      items.push({ label: "重新授权", action: () => startConnection(manager, refreshStatus) });
+      items.push({ label: "生成 Agent 配置", action: () => generateClientConfig(manager, store, configWriter) });
+      items.push({ label: "断开连接", action: () => disconnect(manager, refreshStatus) });
       items.push({ label: "打开 environment.json", action: () => openEnvironmentFile(store) });
       items.push({ label: "清理 MCP 配置", action: () => cleanMcpConfig(configWriter) });
       break;
@@ -145,12 +138,12 @@ async function openEnvironmentFile(store: EnvironmentStore): Promise<void> {
   await vscode.window.showTextDocument(document, { preview: false });
 }
 
-async function testConnection(manager: ProfileManager, refreshStatus: () => Promise<void>): Promise<void> {
-  const selected = await pickProfile(manager, "选择要测试的 NetSuite 连接", (summary) => Boolean(summary.profile.clientId?.trim()));
+async function startConnection(manager: ProfileManager, refreshStatus: () => Promise<void>): Promise<void> {
+  const selected = await pickProfile(manager, "选择要启动的 NetSuite 连接", (summary) => Boolean(summary.profile.clientId?.trim()));
   if (!selected) {
     return;
   }
-  if (selected.environment.environmentType === "production" && !await confirmProduction(selected.environment.accountId, "测试连接")) {
+  if (selected.environment.environmentType === "production" && !await confirmProduction(selected.environment.accountId, "启动连接")) {
     return;
   }
   const result = await vscode.window.withProgress(
@@ -158,106 +151,46 @@ async function testConnection(manager: ProfileManager, refreshStatus: () => Prom
     () => manager.authorizeAndVerify(selected.profile.id, async (authorizationUrl) => vscode.env.openExternal(vscode.Uri.parse(authorizationUrl)))
   );
   await refreshStatus();
-  await vscode.window.showInformationMessage(`MCP 健康检查成功：${result.environment.accountId} / ${result.profile.access}。`);
+  await vscode.window.showInformationMessage(`MCP 健康检查成功：${result.environment.accountId}。`);
 }
 
-async function generateClientConfig(manager: ProfileManager, configWriter: McpConfigWriter): Promise<void> {
+async function generateClientConfig(
+  manager: ProfileManager,
+  store: EnvironmentStore,
+  configWriter: McpConfigWriter
+): Promise<void> {
   const selected = await pickProfile(manager, "选择要写入 MCP 配置的连接", (summary) => summary.profile.status === "verified");
   if (!selected) {
     return;
   }
-  await installAgentConfig(selected, manager, configWriter);
-}
-
-async function installAgentConfig(selected: ProfileSummary, manager: ProfileManager, configWriter: McpConfigWriter): Promise<void> {
-  if (selected.profile.access === "write") {
-    const confirmed = await vscode.window.showWarningMessage(
-      `将为 ${selected.environment.accountId} 写入 write MCP 配置（VS Code / Claude Code / Codex）。写入端点仍需每次 VS Code 会话显式启用。`,
-      { modal: true },
-      "写入配置"
-    );
-    if (confirmed !== "写入配置") {
-      return;
-    }
+  const targets = await pickAgentTargets("选择需要配置的 Agent");
+  if (targets.length === 0) {
+    return;
   }
+  const state = await store.getState();
   const url = await manager.getMcpUrl(selected.profile.id);
-  const server = await configWriter.install(selected.profile.id, selected.environment.accountId, selected.profile.access, url);
+  const server = await configWriter.install(targets, state.workspaceId, url);
 
-  const codexConflictUrl = await configWriter.getCodexConflictUrl(selected.profile.access, url);
-  if (codexConflictUrl) {
-    const confirmed = await vscode.window.showWarningMessage(
-      `Codex 已配置 ${codexServerName(selected.profile.access)}，当前指向 ${codexConflictUrl}。是否覆盖为当前工作区的连接（${url}）？`,
-      { modal: true },
-      "覆盖 Codex 配置"
-    );
-    if (confirmed !== "覆盖 Codex 配置") {
-      await vscode.window.showInformationMessage(`已生成工作区 MCP 配置（VS Code / Claude Code）：${server.name}。Codex 配置未修改。`);
-      return;
-    }
+  if (targets.includes("codex")) {
+    await detectAndPromptStaleCodexEntries(configWriter, store);
   }
-  await configWriter.installCodex(selected.profile.access, url);
-  await vscode.window.showInformationMessage(`已生成本机 MCP 配置（VS Code / Claude Code / Codex）：${server.name}`);
+
+  await vscode.window.showInformationMessage(`已生成 MCP 配置：${server.name}`);
 }
 
-async function enableWrite(manager: ProfileManager, store: EnvironmentStore, refreshStatus: () => Promise<void>): Promise<void> {
-  await manager.ensureWriteProfilesForReadEnvironments();
-
-  const selected = await pickProfile(manager, "选择 write 连接", (summary) => summary.profile.access === "write");
-  if (!selected) {
-    return;
-  }
-
-  if (!selected.profile.clientId?.trim()) {
-    const clientId = await vscode.window.showInputBox({
-      prompt: "请输入 NetSuite Public Client ID",
-      validateInput: (value) => (value.trim() ? null : "Client ID 不能为空"),
-    });
-    if (!clientId?.trim()) {
-      return;
-    }
-    await store.registerProfile(selected.profile.id, clientId);
-  }
-
-  const needsAuthorization = selected.profile.status !== "verified" || !manager.hasActiveSession(selected.profile.id);
-  if (needsAuthorization) {
-    if (selected.environment.environmentType === "production" && !await confirmProduction(selected.environment.accountId, "测试连接")) {
-      return;
-    }
-    await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: "请在浏览器完成 NetSuite 授权；随后执行零数据 MCP 健康检查…" },
-      () => manager.authorizeAndVerify(selected.profile.id, async (authorizationUrl) => vscode.env.openExternal(vscode.Uri.parse(authorizationUrl)))
-    );
-  }
-
-  if (selected.environment.environmentType === "production" && !await confirmProduction(selected.environment.accountId, "启用写入")) {
-    return;
-  }
-  const confirmed = await vscode.window.showWarningMessage(
-    `确认启用 ${selected.environment.accountId} 的写入 MCP 端点？权限由对应 NetSuite Role 决定，并在重启 VS Code 后自动关闭。`,
-    { modal: true },
-    "启用写入"
-  );
-  if (confirmed !== "启用写入") {
-    return;
-  }
-  await manager.enableWrite(selected.profile.id);
+async function disconnect(manager: ProfileManager, refreshStatus: () => Promise<void>): Promise<void> {
+  await manager.disconnect();
   await refreshStatus();
-  await vscode.window.showWarningMessage("NetSuite MCP 写入连接已启用。本次 VS Code 会话结束时会自动关闭。");
-}
-
-async function disableWrite(manager: ProfileManager, refreshStatus: () => Promise<void>): Promise<void> {
-  const selected = await pickProfile(manager, "选择要关闭的 write 连接", (summary) => summary.profile.access === "write" && manager.isWriteEnabled(summary.profile.id));
-  if (!selected) {
-    return;
-  }
-  manager.disableWrite(selected.profile.id);
-  await refreshStatus();
-  await vscode.window.showInformationMessage("写入 MCP 连接已关闭。");
+  await vscode.window.showInformationMessage("已断开 NetSuite MCP 连接。");
 }
 
 async function cleanMcpConfig(configWriter: McpConfigWriter): Promise<void> {
-  await configWriter.removeAllManaged();
-  await vscode.window.showInformationMessage("已清理所有本扩展托管的 MCP 配置条目。");
+  const targets = await pickAgentTargets("选择需要清理的 Agent");
+  if (targets.length === 0) {
+    return;
+  }
+  await configWriter.removeAllManaged(targets);
+  await vscode.window.showInformationMessage("已清理所选 Agent 的 MCP 配置条目。");
 }
 
 // ---------------------------------------------------------------------------
@@ -278,12 +211,57 @@ async function pickProfile(
     return profiles[0];
   }
   const items: ProfilePickItem[] = profiles.map((summary) => ({
-    label: `${summary.environment.accountId} · ${summary.profile.access}`,
+    label: `${summary.environment.accountId}`,
     description: `${summary.environment.environmentType} · ${summary.profile.status}`,
     detail: summary.profile.clientId?.trim() ? "Public Client ID 已填写" : "尚未填写 Public Client ID",
     summary
   }));
   return (await vscode.window.showQuickPick(items, { title }))?.summary;
+}
+
+async function pickAgentTargets(title: string): Promise<AgentTarget[]> {
+  const items: AgentPickItem[] = [
+    { label: "VS Code Copilot", target: "vscode" },
+    { label: "Claude Code", target: "claude-code" },
+    { label: "Codex", target: "codex" }
+  ];
+  const picked = await vscode.window.showQuickPick(items, {
+    title,
+    canPickMany: true
+  });
+  return picked?.map((item) => item.target) ?? [];
+}
+
+async function detectAndPromptStaleCodexEntries(
+  configWriter: McpConfigWriter,
+  store: EnvironmentStore
+): Promise<void> {
+  const entries = await configWriter.listCodexManagedEntries();
+  if (entries.length === 0) {
+    return;
+  }
+  const state = await store.getState();
+  const knownPorts = new Set(state.allocatedPorts);
+  const stale = entries.filter((entry) => {
+    const portMatch = entry.url.match(/127\.0\.0\.1:(\d+)/);
+    if (!portMatch) {
+      return false;
+    }
+    return !knownPorts.has(Number(portMatch[1]));
+  });
+  if (stale.length === 0) {
+    return;
+  }
+  const message = stale.length === 1
+    ? `Codex 配置中存在 1 个陈旧条目：${stale[0].name}。是否清理？`
+    : `Codex 配置中存在 ${stale.length} 个陈旧条目。是否全部清理？`;
+  const confirmed = await vscode.window.showWarningMessage(message, { modal: true }, "清理陈旧条目");
+  if (confirmed !== "清理陈旧条目") {
+    return;
+  }
+  for (const entry of stale) {
+    await configWriter.removeCodexServer(entry.name);
+  }
 }
 
 async function confirmProduction(accountId: string, action = "执行操作"): Promise<boolean> {

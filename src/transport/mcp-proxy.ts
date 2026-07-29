@@ -11,7 +11,6 @@ const HOP_BY_HOP_HEADERS = new Set(["connection", "keep-alive", "proxy-authentic
 export interface ProxyRoute {
   profile: ConnectionProfile;
   endpoints: NetSuiteEndpoints;
-  enabled: boolean;
 }
 
 export type ResolveProxyRoute = (profileId: string) => Promise<ProxyRoute | undefined>;
@@ -103,8 +102,8 @@ export class McpProxy {
         return;
       }
       const route = await this.resolveRoute(segments[0]);
-      if (!route || !route.enabled) {
-        this.respond(response, 503, "该 MCP 连接未启用。请在 VS Code 中验证只读连接或显式启用写入连接。");
+      if (!route) {
+        this.respond(response, 503, "该 MCP 连接未启用。请在 VS Code 中启动连接。");
         return;
       }
       const body = await readRequestBody(request);

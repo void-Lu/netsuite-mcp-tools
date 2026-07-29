@@ -3,11 +3,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parse } from "jsonc-parser";
 import { afterEach, describe, expect, it } from "vitest";
-import { AgentTarget } from "../domain/types";
 import { McpConfigWriter } from "../config/mcp-config-writer";
 
 const roots: string[] = [];
-const ALL_TARGETS: AgentTarget[] = ["vscode", "claude-code", "codex"];
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -107,6 +105,16 @@ describe("McpConfigWriter", () => {
 });
 
 describe("McpConfigWriter Codex TOML", () => {
+  it("defaults to the workspace-scoped .codex/config.toml", async () => {
+    const { root } = await workspace();
+    const writer = new McpConfigWriter(root);
+    const workspaceId = "ws-hash-codex-project";
+    await writer.install(["codex"], workspaceId, "http://127.0.0.1:51234/profile-id/mcp");
+
+    const toml = await readFile(join(root, ".codex", "config.toml"), "utf8");
+    expect(toml).toContain(`[mcp_servers.netsuite-mcp-${workspaceId}]`);
+  });
+
   it("writes a streamable HTTP server entry with workspaceId name", async () => {
     const { root, codexPath } = await workspace();
     const writer = new McpConfigWriter(root, codexPath);

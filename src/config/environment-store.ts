@@ -133,7 +133,8 @@ export class EnvironmentStore {
 
   public async markRegistered(profileId: string): Promise<ConnectionProfile> {
     return this.updateProfile(profileId, (profile) => {
-      const { verifiedAt: _, ...rest } = profile;
+      const rest = { ...profile };
+      delete rest.verifiedAt;
       return { ...rest, status: "registered" };
     });
   }
@@ -242,6 +243,9 @@ export class EnvironmentStore {
     if (raw.schemaVersion === 1) {
       return { state: migrateLegacyState(raw), changed: true };
     }
+    if (raw.schemaVersion === 2) {
+      return { state: migrateV2State(raw), changed: true };
+    }
     assertOnlyKnownFields(raw, TOP_LEVEL_FIELDS);
     let changed = false;
     const state: EnvironmentState = {
@@ -348,7 +352,8 @@ export class EnvironmentStore {
     if (!isRecord(value)) {
       throw invalidEnvironmentSchema();
     }
-    if (hasOnlyKeys(value, V2_PROFILE_FIELDS)) {
+    if ("access" in value) {
+      assertOnlyKnownFields(value, V2_PROFILE_FIELDS);
       markChanged();
       const id = readDerivedString(value, "id", randomUUID(), markChanged);
       const status = value.status === undefined || value.status === "" ? (markChanged(), "draft") : isProfileStatus(value.status) ? value.status : failSchema();

@@ -1,7 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { dirname, join, relative } from "node:path";
-import { homedir } from "node:os";
 import { applyEdits, modify, parse, ParseError } from "jsonc-parser";
 import { AgentTarget, ManagedMcpServer, NetSuiteMcpError } from "../domain/types";
 import { atomicWriteFile, ensureDirectory, readTextIfExists } from "../util/files";
@@ -12,11 +11,11 @@ const formattingOptions = { insertSpaces: true, tabSize: 2, eol: "\n" };
 export class McpConfigWriter {
   public constructor(
     private readonly workspaceRoot: string,
-    private readonly codexConfigPath: string = join(homedir(), ".codex", "config.toml")
+    private readonly codexConfigPath: string = join(workspaceRoot, ".codex", "config.toml")
   ) {}
 
   /**
-   * 写入工作区级 JSON 配置（.vscode/mcp.json 和 .mcp.json）和/或 Codex 用户级配置。
+   * 写入工作区级 JSON 配置（.vscode/mcp.json 和 .mcp.json）和/或 Codex 项目级配置。
    * targets 决定写入哪些 agent 的配置。
    */
   public async install(
@@ -43,9 +42,10 @@ export class McpConfigWriter {
     return server;
   }
 
-  /** 写入 Codex 用户级 TOML 配置，使用 workspaceId 命名。 */
+  /** 写入项目根目录 .codex/config.toml，使用 workspaceId 命名。 */
   public async installCodex(workspaceId: string, url: string): Promise<void> {
     const name = managedServerName(workspaceId);
+    await this.assertNotTracked(this.codexConfigPath);
     const source = (await readTextIfExists(this.codexConfigPath)) ?? "";
     const next = tomlUpsertServer(source, name, url);
     await ensureDirectory(dirname(this.codexConfigPath));
@@ -113,6 +113,7 @@ export class McpConfigWriter {
     if (!source) {
       return;
     }
+    await this.assertNotTracked(this.codexConfigPath);
     const next = tomlRemoveServer(source, name);
     if (next !== source) {
       await atomicWriteFile(this.codexConfigPath, next.endsWith("\n") ? next : `${next}\n`);
@@ -192,7 +193,7 @@ export class McpConfigWriter {
   }
 
   // -----------------------------------------------------------------------
-  // Codex TOML 文件操作（~/.codex/config.toml）
+  // Codex TOML 文件操作（<workspace>/.codex/config.toml）
   // -----------------------------------------------------------------------
 
   private async removeAllCodexManaged(): Promise<void> {
@@ -200,6 +201,7 @@ export class McpConfigWriter {
     if (!source) {
       return;
     }
+    await this.assertNotTracked(this.codexConfigPath);
     const next = tomlRemoveAllManaged(source);
     if (next !== source) {
       await atomicWriteFile(this.codexConfigPath, next.endsWith("\n") ? next : `${next}\n`);
@@ -211,6 +213,7 @@ export class McpConfigWriter {
     if (!source) {
       return;
     }
+    await this.assertNotTracked(this.codexConfigPath);
     const table = tomlFindTable(source, name);
     if (!table || !tomlIsOwnedServer(table.content)) {
       return;
@@ -243,7 +246,7 @@ export class McpConfigWriter {
   }
 }
 
-/** 工作区级 JSON 和 Codex 用户级配置统一使用 workspaceId 命名：netsuite-mcp-<workspaceId>。 */
+/** 工作区级 JSON 和 Codex 项目级配置统一使用 workspaceId 命名：netsuite-mcp-<workspaceId>。 */
 export function managedServerName(workspaceId: string): string {
   return `netsuite-mcp-${workspaceId}`;
 }

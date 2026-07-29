@@ -4,6 +4,13 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.2] - 2026-07-29
+
+### 变更
+
+- **Codex 项目级 MCP 配置**：生成、刷新和清理 Codex MCP 配置时，扩展改为仅操作当前工作区的 `.codex/config.toml`，不再读取或修改用户级 `~/.codex/config.toml`。项目配置被 Git 跟踪时会拒绝改写。
+- **环境配置迁移修复**：重新打开 v3 模板不会再误报“已补全”；已有 v2 read/write profile 会正确迁移为单一 profile。
+
 ## [0.3.1] - 2026-07-29
 
 ### 变更

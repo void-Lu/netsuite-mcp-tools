@@ -151,7 +151,7 @@ async function startConnection(manager: ProfileManager, refreshStatus: () => Pro
     { location: vscode.ProgressLocation.Notification, title: "请在浏览器完成 NetSuite 授权；随后执行零数据 MCP 健康检查…" },
     () => manager.authorizeAndVerify(selected.profile.id, (authorizationUrl) => openAuthorizationBrowser(
       authorizationUrl,
-      (url) => vscode.env.openExternal(vscode.Uri.parse(url))
+      async (url) => vscode.env.openExternal(vscode.Uri.parse(url))
     ))
   );
   await refreshStatus();

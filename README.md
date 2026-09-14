@@ -1,8 +1,8 @@
 # NetSuite MCP Tools
 
-用于 Windows 本机 VS Code 的内部扩展：它通过 NetSuite OAuth 2.0 **Authorization Code + PKCE** 在系统浏览器中授权，在本机提供 Streamable HTTP MCP 代理，并为 VS Code Copilot、Claude Code 与 Codex CLI 生成无凭据的本地 MCP 配置。
+用于 Windows 本机 VS Code 的内部扩展：它通过 NetSuite OAuth 2.0 **Authorization Code + PKCE** 在隔离浏览器会话中授权，在本机提供 Streamable HTTP MCP 代理，并为 VS Code Copilot、Claude Code 与 Codex CLI 生成无凭据的本地 MCP 配置。
 
-当前版本：**v0.3.3**。版本变更详见 `CHANGELOG.md`。
+当前版本：**v0.3.4**。版本变更详见 `CHANGELOG.md`。
 
 > 这不是 M2M 或 mTLS 客户端证书代理。扩展使用 NetSuite Public Client Integration，授权码、PKCE verifier、state、access token 与 refresh token 只在当前 VS Code Extension Host 内存中存在。
 
@@ -93,7 +93,7 @@ VS Code 重启后，即使 `environment.json` 中 profile 标记为 `verified`�
 | MCP 初始化失败 | 确认 SuiteApp 已安装、使用 MCP `2025-06-18`、Role 为非 Administrator 且具有 MCP Server Connection / OAuth 2.0 Access Tokens / REST Web Services 所需权限，并仅在 sandbox 运行 Phase 0。 |
 | MCP 健康检查成功，但 Agent 未显示任何工具 | 确认目标 NetSuite 账号已安装并启用 Oracle NetSuite 发布的 **MCP Standard Tools** SuiteApp。仅具备 AI Connector Service scope 可以完成 OAuth 和 MCP 握手；若该 SuiteApp 未安装或未生效，`tools/list` 仍可能成功返回空列表。安装或更新后，重新授权，并重启本地代理与 Agent 的 MCP 会话。 |
 | 本地端口冲突 | 扩展会自动分配新的回调端口并更新 `environment.json`，同时同步刷新已生成的 MCP 配置（`.vscode/mcp.json`、`.mcp.json`、`.codex/config.toml`）中的 URL。由于 NetSuite 对 loopback Redirect URI 不校验端口（RFC 8252），无需在 Integration 中更新 Redirect URI。仅在多次自动分配均失败时，需关闭占用高位端口的程序后重试。 |
-| 本机代理提示需要授权 | 点击状态栏，从下拉框选择 **启动连接** 或 **重新授权**，在系统浏览器中完成当前会话的授权。 |
+| 本机代理提示需要授权 | 点击状态栏，从下拉框选择 **启动连接** 或 **重新授权**，在隔离的 InPrivate/Incognito 窗口中完成当前会话的授权。 |
 | Agent 未连接 | 检查 VS Code 是否打开该工作区、profile 是否已验证，以及 `.vscode/mcp.json`、`.mcp.json` 或 `.codex/config.toml` 是否被 Git 跟踪或损坏。 |
 
 日志位于 `/.netsuite-mcp/logs/`，仅保存脱敏事件、状态码和 MCP 方法名，最多保留 7 天或 10 MB。

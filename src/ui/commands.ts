@@ -3,6 +3,7 @@ import { EnvironmentStore } from "../config/environment-store";
 import { McpConfigWriter } from "../config/mcp-config-writer";
 import { AgentTarget, NetSuiteMcpError } from "../domain/types";
 import { ProfileManager, ProfileSummary } from "../services/profile-manager";
+import { openAuthorizationBrowser } from "../util/isolated-browser";
 
 export type BarState =
   | { kind: "needsFix" }
@@ -148,7 +149,10 @@ async function startConnection(manager: ProfileManager, refreshStatus: () => Pro
   }
   const result = await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: "请在浏览器完成 NetSuite 授权；随后执行零数据 MCP 健康检查…" },
-    () => manager.authorizeAndVerify(selected.profile.id, async (authorizationUrl) => vscode.env.openExternal(vscode.Uri.parse(authorizationUrl)))
+    () => manager.authorizeAndVerify(selected.profile.id, (authorizationUrl) => openAuthorizationBrowser(
+      authorizationUrl,
+      (url) => vscode.env.openExternal(vscode.Uri.parse(url))
+    ))
   );
   await refreshStatus();
   await vscode.window.showInformationMessage(`MCP 健康检查成功：${result.environment.accountId}。`);

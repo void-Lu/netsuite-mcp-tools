@@ -4,6 +4,12 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.4] - 2026-09-14
+
+### 修复
+
+- **OAuth 使用隔离浏览器会话**：授权改为优先用 Edge InPrivate / Chrome Incognito 打开，避免默认浏览器里的 NetSuite 会话 Role 被其他本机 NetSuite 工具静默续期写进共享凭证。找不到 Edge/Chrome 时回退系统默认浏览器。
+
 ## [0.3.3] - 2026-07-29
 
 ### 变更

@@ -48,7 +48,7 @@ export class HealthCheckService {
         params: {
           protocolVersion: PROTOCOL_VERSION,
           capabilities: {},
-          clientInfo: { name: "netsuite-mcp-tools", version: "0.3.3" }
+          clientInfo: { name: "netsuite-mcp-tools", version: "0.3.4" }
         }
       });
       return { value: response, httpStatus: response.status };

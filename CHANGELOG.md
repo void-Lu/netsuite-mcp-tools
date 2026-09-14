@@ -8,7 +8,7 @@
 
 ### 修复
 
-- **OAuth 使用隔离浏览器会话**：授权改为优先用 Edge InPrivate / Chrome Incognito 打开，避免默认浏览器里的 NetSuite 会话 Role 被其他本机 NetSuite 工具静默续期写进共享凭证。找不到 Edge/Chrome 时回退系统默认浏览器。
+- **OAuth 使用独立浏览器用户目录**：授权改为优先用 Edge/Chrome 的 `--user-data-dir`（`%LOCALAPPDATA%\\netsuite-mcp-tools\\browser-profile`）打开，不碰默认浏览器配置。找不到 Edge/Chrome 时回退系统默认浏览器。
 
 ## [0.3.3] - 2026-07-29
 

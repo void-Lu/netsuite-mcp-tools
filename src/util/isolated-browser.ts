@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 export interface IsolatedBrowserCommand {
@@ -8,19 +9,23 @@ export interface IsolatedBrowserCommand {
 }
 
 /**
- * SuiteCloud Development Integration 的 OAuth 同意策略常为「从不询问」。
- * 若 MCP 授权走默认浏览器配置，随后 SuiteCloud PKCE 续期会继承这次选的 Role，
- * 并改写 ~/.suitecloud-sdk/credentials_browser_based.p12。
- * InPrivate/Incognito 把 MCP 登录隔离在一次性会话里。
- * ponytail: 只覆盖 Edge/Chrome；Firefox 或其他浏览器回退系统默认打开。
+ * 独立 --user-data-dir 把 MCP 登录留在本扩展专用配置里，不动默认浏览器会话。
+ * ponytail: 只覆盖 Edge/Chrome；其他浏览器回退系统默认打开。
  */
+export function isolatedBrowserProfileDir(): string {
+  const root = process.env.LOCALAPPDATA?.trim() || homedir();
+  return join(root, "netsuite-mcp-tools", "browser-profile");
+}
+
 export function isolatedBrowserCommands(authorizationUrl: string): IsolatedBrowserCommand[] {
+  const profileDir = isolatedBrowserProfileDir();
+  const args = [`--user-data-dir=${profileDir}`, "--no-first-run", "--no-default-browser-check", authorizationUrl];
   const roots = [process.env.ProgramFiles, process.env["ProgramFiles(x86)"], process.env.LOCALAPPDATA]
     .filter((value): value is string => Boolean(value));
   const commands: IsolatedBrowserCommand[] = [];
   for (const root of roots) {
-    commands.push({ command: join(root, "Microsoft", "Edge", "Application", "msedge.exe"), args: ["--inprivate", authorizationUrl] });
-    commands.push({ command: join(root, "Google", "Chrome", "Application", "chrome.exe"), args: ["--incognito", authorizationUrl] });
+    commands.push({ command: join(root, "Microsoft", "Edge", "Application", "msedge.exe"), args });
+    commands.push({ command: join(root, "Google", "Chrome", "Application", "chrome.exe"), args });
   }
   return commands;
 }

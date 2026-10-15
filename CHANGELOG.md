@@ -4,6 +4,12 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 修复
+
+- **SuiteCloud 工具描述长度**：本地 MCP 代理在转发 `tools/list` 时将每个 tool `description` 截断至最多 4000 字符（SuiteCloud Developer Assistant 对超过 4096 的描述返回 HTTP 204 空 body），并移除 `inputSchema` / `parameters` 根级 `title`，避免 Cline 报 `AI_EmptyResponseBodyError`。
+
 ## [0.3.5] - 2026-10-15
 
 ### 新增

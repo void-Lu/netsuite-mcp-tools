@@ -4,6 +4,7 @@ import { URL } from "node:url";
 import { ConnectionProfile, NetSuiteEndpoints, NetSuiteMcpError } from "../domain/types";
 import { OAuthClient } from "../net/oauth-client";
 import { RedactedLogger } from "../services/redacted-logger";
+import { isToolsListRequestBody, sanitizeToolsListResponseBody } from "../util/sanitize-mcp-tools";
 
 const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 const HOP_BY_HOP_HEADERS = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade"]);
@@ -136,6 +137,8 @@ export class McpProxy {
     headers.authorization = `Bearer ${token}`;
     headers["content-length"] = String(body.byteLength);
 
+    const sanitizeToolsList = isToolsListRequestBody(body);
+
     await new Promise<void>((resolve, reject) => {
       const upstream = httpsRequest(
         {
@@ -152,18 +155,46 @@ export class McpProxy {
             // 内存 access token 过期，让下一次独立请求按正常刷新路径取得新 token。
             this.oauthClient.invalidateAccessToken(route.profile.id);
           }
-          const responseHeaders = filterResponseHeaders(upstreamResponse.headers);
-          response.writeHead(upstreamResponse.statusCode ?? 502, responseHeaders);
-          upstreamResponse.pipe(response);
-          upstreamResponse.once("end", () => {
+          const logAndResolve = (): void => {
             void this.logger.info("proxy_request", {
               profile: route.profile.id.slice(0, 8),
               statusCode: upstreamResponse.statusCode ?? 502,
-              method: request.method
+              method: request.method,
+              sanitizedToolsList: sanitizeToolsList
             });
             resolve();
+          };
+
+          if (!sanitizeToolsList) {
+            const responseHeaders = filterResponseHeaders(upstreamResponse.headers);
+            response.writeHead(upstreamResponse.statusCode ?? 502, responseHeaders);
+            upstreamResponse.pipe(response);
+            upstreamResponse.once("end", logAndResolve);
+            upstreamResponse.once("error", reject);
+            return;
+          }
+
+          // Buffer tools/list only: truncate descriptions / strip schema titles for SuiteCloud.
+          const chunks: Buffer[] = [];
+          upstreamResponse.on("data", (chunk: Buffer | string) => {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
           });
           upstreamResponse.once("error", reject);
+          upstreamResponse.once("end", () => {
+            try {
+              const raw = Buffer.concat(chunks).toString("utf8");
+              const sanitized = Buffer.from(sanitizeToolsListResponseBody(raw), "utf8");
+              const responseHeaders = filterResponseHeaders(upstreamResponse.headers);
+              delete responseHeaders["transfer-encoding"];
+              delete responseHeaders["content-length"];
+              responseHeaders["content-length"] = String(sanitized.byteLength);
+              response.writeHead(upstreamResponse.statusCode ?? 502, responseHeaders);
+              response.end(sanitized);
+              logAndResolve();
+            } catch (error) {
+              reject(error instanceof Error ? error : new Error(String(error)));
+            }
+          });
         }
       );
       upstream.once("error", reject);

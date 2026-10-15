@@ -5,6 +5,11 @@ import { URL } from "node:url";
 import { ConnectionProfile, NetSuiteEndpoints, NetSuiteMcpError } from "../domain/types";
 import { OAuthClient } from "../net/oauth-client";
 import { RedactedLogger } from "../services/redacted-logger";
+import {
+  buildEmptyListResultBody,
+  parseJsonRpcRequest,
+  shouldNormalizeJsonRpcErrorHttpStatus
+} from "../util/mcp-jsonrpc";
 import { isToolsListRequestBody, sanitizeToolsListResponseBody } from "../util/sanitize-mcp-tools";
 
 const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
@@ -116,6 +121,25 @@ export class McpProxy {
         return;
       }
       const body = await readRequestBody(request);
+
+      // NetSuite advertises resources but rejects templates/list with HTTP 400
+      // "Capability not supported". Cline Streamable HTTP treats that as a
+      // transport error and reconnect-loops. Answer locally with an empty list.
+      const rpc = parseJsonRpcRequest(body);
+      if (rpc?.hasId && rpc.id !== undefined) {
+        const stub = buildEmptyListResultBody(rpc.method, rpc.id);
+        if (stub) {
+          this.respondJson(response, 200, stub);
+          void this.logger.info("proxy_request", {
+            profile: route.profile.id.slice(0, 8),
+            statusCode: 200,
+            method: request.method,
+            localStub: rpc.method
+          });
+          return;
+        }
+      }
+
       await this.forward(route, request, response, localUrl.search, body);
     } catch (error) {
       await this.logger.error("proxy_request_failed", { message: error instanceof Error ? error.message : "unknown" });
@@ -171,26 +195,32 @@ export class McpProxy {
             // 内存 access token 过期，让下一次独立请求按正常刷新路径取得新 token。
             this.oauthClient.invalidateAccessToken(route.profile.id);
           }
-          const logAndResolve = (): void => {
+          const statusCode = upstreamResponse.statusCode ?? 502;
+          // Buffer tools/list sanitize, or 4xx JSON-RPC errors that must become HTTP 200
+          // for Streamable HTTP clients (Cline reconnects on non-2xx).
+          const mayNormalizeJsonRpcError = statusCode >= 400 && statusCode !== 401;
+          const bufferResponse = sanitizeToolsList || mayNormalizeJsonRpcError;
+
+          const logAndResolve = (finalStatus: number): void => {
             void this.logger.info("proxy_request", {
               profile: route.profile.id.slice(0, 8),
-              statusCode: upstreamResponse.statusCode ?? 502,
+              statusCode: finalStatus,
               method: request.method,
-              sanitizedToolsList: sanitizeToolsList
+              sanitizedToolsList: sanitizeToolsList,
+              normalizedJsonRpcErrorHttp: mayNormalizeJsonRpcError && finalStatus === 200 && statusCode >= 400
             });
             resolve();
           };
 
-          if (!sanitizeToolsList) {
+          if (!bufferResponse) {
             const responseHeaders = filterResponseHeaders(upstreamResponse.headers);
-            response.writeHead(upstreamResponse.statusCode ?? 502, responseHeaders);
+            response.writeHead(statusCode, responseHeaders);
             upstreamResponse.pipe(response);
-            upstreamResponse.once("end", logAndResolve);
+            upstreamResponse.once("end", () => logAndResolve(statusCode));
             upstreamResponse.once("error", reject);
             return;
           }
 
-          // Buffer tools/list only: truncate descriptions / strip schema titles for SuiteCloud.
           const chunks: Buffer[] = [];
           upstreamResponse.on("data", (chunk: Buffer | string) => {
             chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
@@ -200,16 +230,26 @@ export class McpProxy {
             try {
               const compressed = Buffer.concat(chunks);
               const rawBuffer = decodeContentEncoding(compressed, upstreamResponse.headers["content-encoding"]);
-              const raw = rawBuffer.toString("utf8");
-              const sanitized = Buffer.from(sanitizeToolsListResponseBody(raw), "utf8");
+              let outBuffer = rawBuffer;
+              let finalStatus = statusCode;
+
+              if (sanitizeToolsList) {
+                outBuffer = Buffer.from(sanitizeToolsListResponseBody(rawBuffer.toString("utf8")), "utf8");
+              } else if (shouldNormalizeJsonRpcErrorHttpStatus(statusCode, rawBuffer.toString("utf8"))) {
+                finalStatus = 200;
+              }
+
               const responseHeaders = filterResponseHeaders(upstreamResponse.headers);
               delete responseHeaders["transfer-encoding"];
               delete responseHeaders["content-length"];
               delete responseHeaders["content-encoding"];
-              responseHeaders["content-length"] = String(sanitized.byteLength);
-              response.writeHead(upstreamResponse.statusCode ?? 502, responseHeaders);
-              response.end(sanitized);
-              logAndResolve();
+              responseHeaders["content-length"] = String(outBuffer.byteLength);
+              if (!responseHeaders["content-type"]) {
+                responseHeaders["content-type"] = "application/json; charset=utf-8";
+              }
+              response.writeHead(finalStatus, responseHeaders);
+              response.end(outBuffer);
+              logAndResolve(finalStatus);
             } catch (error) {
               reject(error instanceof Error ? error : new Error(String(error)));
             }
@@ -224,6 +264,15 @@ export class McpProxy {
   private respond(response: ServerResponse, statusCode: number, message: string): void {
     response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
     response.end(JSON.stringify({ error: message }));
+  }
+
+  private respondJson(response: ServerResponse, statusCode: number, body: string): void {
+    response.writeHead(statusCode, {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      "content-length": String(Buffer.byteLength(body))
+    });
+    response.end(body);
   }
 
   private respondMethodNotAllowed(response: ServerResponse): void {
@@ -295,4 +344,3 @@ function filterResponseHeaders(headers: IncomingMessage["headers"]): Record<stri
     Object.entries(headers).filter(([name]) => !HOP_BY_HOP_HEADERS.has(name.toLowerCase()))
   );
 }
-

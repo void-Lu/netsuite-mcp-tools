@@ -10,6 +10,7 @@
 
 ### 修复
 
+- **Cline resources/templates/list HTTP 400**：NetSuite 对 `resources/templates/list`（以及部分其它未实现方法）返回 HTTP 400 + JSON-RPC `Capability not supported`。Cline Streamable HTTP 把非 2xx 当成传输错误并触发 reconnect 循环（UI 一直 restarting）。代理现对 `resources/templates/list` 本地返回 HTTP 200 空 `resourceTemplates`；其它上游 HTTP ≥400 且 body 为带 `error` 的 JSON-RPC 时，将状态改写为 200，保留原错误体。
 - **SuiteCloud 工具描述长度**：本地 MCP 代理在转发 `tools/list` 时将每个 tool `description` 截断至最多 4000 字符（SuiteCloud Developer Assistant 对超过 4096 的描述返回 HTTP 204 空 body），并移除 `inputSchema` / `parameters` 根级 `title`，避免 Cline 报 `AI_EmptyResponseBodyError`。
 - **Cline tools/list gzip**：转发并改写 `tools/list` 时，若上游返回 `content-encoding: gzip`（或其它压缩），先解压再做描述截断；写出明文 JSON 时删除 `content-encoding`。此前把 gzip 字节当 UTF-8 解析却仍保留 gzip 头，Cline 解压报 `incorrect header check` 并不断 restarting。tools/list 请求同时设置 `Accept-Encoding: identity`。
 - **Cline Streamable HTTP GET/SSE**：本地 MCP 代理对 `/{profileId}/mcp` 的 GET/HEAD 直接返回 **405 Method Not Allowed**（`Allow: POST`），不再转发到 Oracle。Oracle 对 `Accept: text/event-stream` 返回 406；Cline 的 Streamable HTTP 客户端仅将 405 视为“不支持 SSE”，其它状态会重连循环并导致 tools 列表起不来。
@@ -22,6 +23,7 @@
 
 ### 修复
 
+- **Cline resources/templates/list HTTP 400**：NetSuite 对 `resources/templates/list`（以及部分其它未实现方法）返回 HTTP 400 + JSON-RPC `Capability not supported`。Cline Streamable HTTP 把非 2xx 当成传输错误并触发 reconnect 循环（UI 一直 restarting）。代理现对 `resources/templates/list` 本地返回 HTTP 200 空 `resourceTemplates`；其它上游 HTTP ≥400 且 body 为带 `error` 的 JSON-RPC 时，将状态改写为 200，保留原错误体。
 - **OAuth 使用独立浏览器用户目录**：授权改为优先用 Edge/Chrome 的 `--user-data-dir`（`%LOCALAPPDATA%\\netsuite-mcp-tools\\browser-profile`）打开，不碰默认浏览器配置。找不到 Edge/Chrome 时回退系统默认浏览器。
 
 ## [0.3.3] - 2026-07-29

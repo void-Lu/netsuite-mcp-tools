@@ -6,17 +6,12 @@
 
 ## [Unreleased]
 
-## [0.3.6] - 2026-10-15
-
-### 修复
-
-- **Cline Streamable HTTP GET/SSE**：本地 MCP 代理对 `/{profileId}/mcp` 的 GET/HEAD 直接返回 **405 Method Not Allowed**（`Allow: POST`），不再转发到 Oracle。Oracle 对 `Accept: text/event-stream` 返回 406；Cline 的 Streamable HTTP 客户端仅将 405 视为“不支持 SSE”，其它状态会重连循环并导致 tools 列表起不来。
-
 ## [0.3.5] - 2026-10-15
 
 ### 修复
 
 - **SuiteCloud 工具描述长度**：本地 MCP 代理在转发 `tools/list` 时将每个 tool `description` 截断至最多 4000 字符（SuiteCloud Developer Assistant 对超过 4096 的描述返回 HTTP 204 空 body），并移除 `inputSchema` / `parameters` 根级 `title`，避免 Cline 报 `AI_EmptyResponseBodyError`。
+- **Cline Streamable HTTP GET/SSE**：本地 MCP 代理对 `/{profileId}/mcp` 的 GET/HEAD 直接返回 **405 Method Not Allowed**（`Allow: POST`），不再转发到 Oracle。Oracle 对 `Accept: text/event-stream` 返回 406；Cline 的 Streamable HTTP 客户端仅将 405 视为“不支持 SSE”，其它状态会重连循环并导致 tools 列表起不来。
 
 ### 新增
 

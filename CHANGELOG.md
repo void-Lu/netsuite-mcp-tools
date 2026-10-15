@@ -11,6 +11,7 @@
 ### 修复
 
 - **SuiteCloud 工具描述长度**：本地 MCP 代理在转发 `tools/list` 时将每个 tool `description` 截断至最多 4000 字符（SuiteCloud Developer Assistant 对超过 4096 的描述返回 HTTP 204 空 body），并移除 `inputSchema` / `parameters` 根级 `title`，避免 Cline 报 `AI_EmptyResponseBodyError`。
+- **Cline tools/list gzip**：转发并改写 `tools/list` 时，若上游返回 `content-encoding: gzip`（或其它压缩），先解压再做描述截断；写出明文 JSON 时删除 `content-encoding`。此前把 gzip 字节当 UTF-8 解析却仍保留 gzip 头，Cline 解压报 `incorrect header check` 并不断 restarting。tools/list 请求同时设置 `Accept-Encoding: identity`。
 - **Cline Streamable HTTP GET/SSE**：本地 MCP 代理对 `/{profileId}/mcp` 的 GET/HEAD 直接返回 **405 Method Not Allowed**（`Allow: POST`），不再转发到 Oracle。Oracle 对 `Accept: text/event-stream` 返回 406；Cline 的 Streamable HTTP 客户端仅将 405 视为“不支持 SSE”，其它状态会重连循环并导致 tools 列表起不来。
 
 ### 新增
@@ -108,3 +109,4 @@
 - MCP 配置写入：自动生成 `.vscode/mcp.json` 和 `.mcp.json`，支持 JSONC 注释，不覆盖非本扩展管理的条目。
 - 端口分配隔离：跨工作区端口冲突检测和共享端口索引。
 - 脱敏日志：profile ID、token、client ID 等敏感信息在日志中自动脱敏。
+

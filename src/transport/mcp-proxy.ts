@@ -1,5 +1,6 @@
-import { createServer, IncomingMessage, Server, ServerResponse } from "node:http";
+import { createServer, IncomingMessage, Server, ServerResponse, request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
+import { brotliDecompressSync, gunzipSync, inflateSync } from "node:zlib";
 import { URL } from "node:url";
 import { ConnectionProfile, NetSuiteEndpoints, NetSuiteMcpError } from "../domain/types";
 import { OAuthClient } from "../net/oauth-client";
@@ -145,9 +146,17 @@ export class McpProxy {
     headers["content-length"] = String(body.byteLength);
 
     const sanitizeToolsList = isToolsListRequestBody(body);
+    // tools/list is buffered + rewritten as plain UTF-8 JSON. Ask upstream for
+    // identity encoding so we do not have to round-trip gzip, and always strip
+    // content-encoding on the rewritten response (Cline gunzips → "incorrect header check").
+    if (sanitizeToolsList) {
+      headers["accept-encoding"] = "identity";
+    }
+
+    const requestFn = mcpUrl.protocol === "http:" ? httpRequest : httpsRequest;
 
     await new Promise<void>((resolve, reject) => {
-      const upstream = httpsRequest(
+      const upstream = requestFn(
         {
           protocol: mcpUrl.protocol,
           hostname: mcpUrl.hostname,
@@ -189,11 +198,14 @@ export class McpProxy {
           upstreamResponse.once("error", reject);
           upstreamResponse.once("end", () => {
             try {
-              const raw = Buffer.concat(chunks).toString("utf8");
+              const compressed = Buffer.concat(chunks);
+              const rawBuffer = decodeContentEncoding(compressed, upstreamResponse.headers["content-encoding"]);
+              const raw = rawBuffer.toString("utf8");
               const sanitized = Buffer.from(sanitizeToolsListResponseBody(raw), "utf8");
               const responseHeaders = filterResponseHeaders(upstreamResponse.headers);
               delete responseHeaders["transfer-encoding"];
               delete responseHeaders["content-length"];
+              delete responseHeaders["content-encoding"];
               responseHeaders["content-length"] = String(sanitized.byteLength);
               response.writeHead(upstreamResponse.statusCode ?? 502, responseHeaders);
               response.end(sanitized);
@@ -248,6 +260,24 @@ async function readRequestBody(request: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
+
+function decodeContentEncoding(buffer: Buffer, contentEncoding: string | string[] | undefined): Buffer {
+  const raw = Array.isArray(contentEncoding) ? contentEncoding[0] : contentEncoding;
+  const encoding = raw?.toLowerCase().trim();
+  if (!encoding || encoding === "identity") {
+    return buffer;
+  }
+  if (encoding === "gzip" || encoding === "x-gzip") {
+    return gunzipSync(buffer);
+  }
+  if (encoding === "deflate") {
+    return inflateSync(buffer);
+  }
+  if (encoding === "br") {
+    return brotliDecompressSync(buffer);
+  }
+  return buffer;
+}
 function filterRequestHeaders(headers: IncomingMessage["headers"]): Record<string, string | string[]> {
   return Object.fromEntries(
     Object.entries(headers).flatMap(([name, value]) => {
@@ -265,3 +295,4 @@ function filterResponseHeaders(headers: IncomingMessage["headers"]): Record<stri
     Object.entries(headers).filter(([name]) => !HOP_BY_HOP_HEADERS.has(name.toLowerCase()))
   );
 }
+

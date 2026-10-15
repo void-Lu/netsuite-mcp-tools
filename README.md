@@ -1,6 +1,6 @@
 # NetSuite MCP Tools
 
-用于 Windows 本机 VS Code 的内部扩展：它通过 NetSuite OAuth 2.0 **Authorization Code + PKCE** 在独立浏览器用户目录中授权，在本机提供 Streamable HTTP MCP 代理，并为 VS Code Copilot、Claude Code 与 Codex CLI 生成无凭据的本地 MCP 配置。
+用于 Windows 本机 VS Code 的内部扩展：它通过 NetSuite OAuth 2.0 **Authorization Code + PKCE** 在独立浏览器用户目录中授权，在本机提供 Streamable HTTP MCP 代理，并为 VS Code Copilot、Claude Code、Codex CLI 与 Cline 生成无凭据的本地 MCP 配置。
 
 当前版本：**v0.3.4**。版本变更详见 `CHANGELOG.md`。
 
@@ -9,7 +9,7 @@
 ## 支持范围
 
 - Windows Desktop 上的本地单文件夹工作区
-- 当前稳定版 VS Code Copilot、Claude Code CLI 与 Codex CLI
+- 当前稳定版 VS Code Copilot、Claude Code CLI、Codex CLI 与 Cline
 - 官方 NetSuite AI Connector SuiteApp：`com.netsuite.mcpstandardtools`
 - NetSuite Public Client Integration 与非 Administrator Role
 
@@ -57,7 +57,7 @@ VS Code 重启后，即使 `environment.json` 中 profile 标记为 `verified`�
    - 启用 **NetSuite AI Connector Service** scope；
    - 使用非 Administrator 的最小权限 Role。该 Role 必须有 **MCP Server Connection**、**OAuth 2.0 Access Tokens**，并在使用 MCP Standard Tools SuiteApp 时具有 **REST Web Services** 权限。
 4. 回到 `environment.json` 填写 `clientId` 并保存，然后点击状态栏按钮，从下拉框选择 **启动连接**。扩展会启动仅限 `127.0.0.1` 的临时回调、打开系统浏览器完成 NetSuite 登录/同意，再执行 MCP `initialize` 与 `tools/list` 健康检查，不读取业务数据；健康检查成功后会把档案标记为已验证，并将该工作区固定端口加入共享的 `allocatedPorts` 和当前主机的插件用户级排除清单。
-5. 验证后，点击状态栏按钮，从下拉框选择 **生成 Agent 配置**。弹出多选下拉框，选择需要配置的 Agent（VS Code Copilot、Claude Code、Codex CLI，允许多选），确认后写入对应的配置文件。
+5. 验证后，点击状态栏按钮，从下拉框选择 **生成 Agent 配置**。弹出多选下拉框，选择需要配置的 Agent（VS Code Copilot、Claude Code、Codex CLI、Cline，允许多选），确认后写入对应的配置文件。
 
 ## 权限模型
 
@@ -73,6 +73,8 @@ VS Code 重启后，即使 `environment.json` 中 profile 标记为 `verified`�
 
 **Codex CLI**（工作区级）：配置写入 `.codex/config.toml` 的 `[mcp_servers.netsuite-mcp-<workspaceId>]` 表，仅包含 `url` 字段，不会读取或修改用户级 `~/.codex/config.toml`。与其他 Agent 一样，生成时仅新增或更新当前工作区的受托管条目；需要移除历史受托管条目时，请使用 **清理 MCP 配置** 操作。
 
+**Cline**（用户级）：配置写入 `mcpServers.netsuite-mcp`，类型为 `streamableHttp`，URL 是所选 profile 的完整本机 MCP 地址。路径默认为 `~/.cline/data/settings/cline_mcp_settings.json`，可通过 `CLINE_MCP_SETTINGS_PATH` 指定其他 settings 文件。Cline 只有一个全局 NetSuite MCP 条目；每次明确生成都会选择并替换为当前 profile。端口刷新仅更新路径匹配的 profile URL，不会切换到另一个 profile，也不会创建缺失条目。清理只删除通过 loopback 所有权检查的精确 `netsuite-mcp` 键，保留其他条目（包括 `netsuite-mcp-*`）。
+
 `environment.json` 只能保存非机密配置和扩展派生的文件元数据，可由管理员随项目共享给其他用户。`allocatedPorts` 会传递已验证工作区使用过的端口，帮助其他用户初始化新工作区时避让。若文件包含 private key、Client Secret、Certificate ID、JWT、token、认证头或其他未知字段，扩展会拒绝加载它。
 
 若该文件不存在、为空或仅包含空白字符，打开命令会重新初始化完整的草稿模板。对于只缺少扩展维护字段的合法 JSON，扩展会安全补全并提示"已补全"，同时保留已有 accountId、环境和 Client ID。JSON 损坏、字段类型错误或包含未知字段时不会覆盖文件，需先手动修复。
@@ -82,7 +84,7 @@ VS Code 重启后，即使 `environment.json` 中 profile 标记为 `verified`�
 - **断开连接**：在已连接状态下，从下拉框选择 **断开连接**。扩展会清除当前工作区的内存 token、停止本机代理服务器，并将 profile 状态回退为 `registered`。已生成的 MCP 配置不会被自动清理，用户可在后续重新启动连接。
 - **重新授权**：在已连接状态下，从下拉框选择 **重新授权**。扩展会打开浏览器完成新一轮 OAuth 授权；在新的授权完成之前，旧的 token 仍然有效，不会提前清除。
 - 扩展不会自动撤销 NetSuite 远端 Integration 或其已授予的访问权限。
-- **清理 MCP 配置**操作会弹出多选下拉框，选择需要清理的 Agent 后，扫描对应配置文件，删除所有由本扩展托管（名称以 `netsuite-mcp-` 开头）的 server 条目，保留无关配置。
+- **清理 MCP 配置**操作会弹出多选下拉框。VS Code、Claude Code 和 Codex 会扫描对应配置并删除由本扩展托管的 `netsuite-mcp-*` 条目；Cline 只删除通过 loopback 所有权检查的精确 `netsuite-mcp` 键。其他配置均保留。
 - 若复制项目到另一个 Windows 用户/设备，必须使用该设备的浏览器重新授权。
 
 ## 故障处理
@@ -92,9 +94,9 @@ VS Code 重启后，即使 `environment.json` 中 profile 标记为 `verified`�
 | 浏览器授权失败或回调超时 | 核对 Public Client、Redirect URI（必须与模板完全一致）、Authorization Code Grant、AI Connector Service scope 与 OAuth 2.0 feature。 |
 | MCP 初始化失败 | 确认 SuiteApp 已安装、使用 MCP `2025-06-18`、Role 为非 Administrator 且具有 MCP Server Connection / OAuth 2.0 Access Tokens / REST Web Services 所需权限，并仅在 sandbox 运行 Phase 0。 |
 | MCP 健康检查成功，但 Agent 未显示任何工具 | 确认目标 NetSuite 账号已安装并启用 Oracle NetSuite 发布的 **MCP Standard Tools** SuiteApp。仅具备 AI Connector Service scope 可以完成 OAuth 和 MCP 握手；若该 SuiteApp 未安装或未生效，`tools/list` 仍可能成功返回空列表。安装或更新后，重新授权，并重启本地代理与 Agent 的 MCP 会话。 |
-| 本地端口冲突 | 扩展会自动分配新的回调端口并更新 `environment.json`，同时同步刷新已生成的 MCP 配置（`.vscode/mcp.json`、`.mcp.json`、`.codex/config.toml`）中的 URL。由于 NetSuite 对 loopback Redirect URI 不校验端口（RFC 8252），无需在 Integration 中更新 Redirect URI。仅在多次自动分配均失败时，需关闭占用高位端口的程序后重试。 |
+| 本地端口冲突 | 扩展会自动分配新的回调端口并更新 `environment.json`，同时同步刷新已生成的 MCP 配置（`.vscode/mcp.json`、`.mcp.json`、`.codex/config.toml` 及 profile 路径匹配的 Cline `netsuite-mcp`）中的 URL。由于 NetSuite 对 loopback Redirect URI 不校验端口（RFC 8252），无需在 Integration 中更新 Redirect URI。仅在多次自动分配均失败时，需关闭占用高位端口的程序后重试。 |
 | 本机代理提示需要授权 | 点击状态栏，从下拉框选择 **启动连接** 或 **重新授权**。扩展会用独立浏览器用户目录打开授权页，不写入系统默认浏览器的 NetSuite 会话。 |
-| Agent 未连接 | 检查 VS Code 是否打开该工作区、profile 是否已验证，以及 `.vscode/mcp.json`、`.mcp.json` 或 `.codex/config.toml` 是否被 Git 跟踪或损坏。 |
+| Agent 未连接 | 检查 VS Code 是否打开该工作区、profile 是否已验证，以及对应 Agent 的 MCP 配置是否存在且有效。Cline 使用 `CLINE_MCP_SETTINGS_PATH` 指向的 settings 文件，或默认的 `~/.cline/data/settings/cline_mcp_settings.json`。 |
 
 日志位于 `/.netsuite-mcp/logs/`，仅保存脱敏事件、状态码和 MCP 方法名，最多保留 7 天或 10 MB。
 

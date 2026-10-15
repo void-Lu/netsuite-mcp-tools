@@ -4,6 +4,12 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+
+- **Cline MCP 配置**：Agent 配置生成和清理现已支持 Cline。写入用户级 `mcpServers.netsuite-mcp`（`streamableHttp`），路径由 `CLINE_MCP_SETTINGS_PATH` 指定或默认为 `~/.cline/data/settings/cline_mcp_settings.json`。生成选择完整 profile URL；端口刷新仅更新 profile 路径匹配的现有条目；清理仅删除通过 loopback 所有权检查的精确键，并保留 `netsuite-mcp-*` 兄弟条目。
+
 ## [0.3.4] - 2026-09-14
 
 ### 修复

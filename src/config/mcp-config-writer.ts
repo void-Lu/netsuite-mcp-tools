@@ -1,17 +1,24 @@
 import { execFile } from "node:child_process";
+import { homedir } from "node:os";
 import { promisify } from "node:util";
-import { dirname, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { applyEdits, modify, parse, ParseError } from "jsonc-parser";
 import { AgentTarget, ManagedMcpServer, NetSuiteMcpError } from "../domain/types";
 import { atomicWriteFile, ensureDirectory, readTextIfExists } from "../util/files";
 
 const execFileAsync = promisify(execFile);
 const formattingOptions = { insertSpaces: true, tabSize: 2, eol: "\n" };
+export const CLINE_MCP_SERVER_NAME = "netsuite-mcp";
+
+export function resolveClineSettingsPath(settingsPath: string | undefined = process.env.CLINE_MCP_SETTINGS_PATH, userHome: string = homedir()): string {
+  return settingsPath || join(userHome, ".cline", "data", "settings", "cline_mcp_settings.json");
+}
 
 export class McpConfigWriter {
   public constructor(
     private readonly workspaceRoot: string,
-    private readonly codexConfigPath: string = join(workspaceRoot, ".codex", "config.toml")
+    private readonly codexConfigPath: string = join(workspaceRoot, ".codex", "config.toml"),
+    private readonly clineConfigPath: string = resolveClineSettingsPath()
   ) {}
 
   /**
@@ -33,6 +40,9 @@ export class McpConfigWriter {
     }
     if (targets.includes("claude-code")) {
       changes.push(this.prepareUpsert(join(this.workspaceRoot, ".mcp.json"), "mcpServers", server));
+    }
+    if (targets.includes("cline")) {
+      changes.push(this.prepareUpsert(this.clineConfigPath, "mcpServers", { name: CLINE_MCP_SERVER_NAME, url }, "streamableHttp"));
     }
     const results = await Promise.all(changes);
     await Promise.all(results.map(({ path, next }) => writeIfChanged(path, next)));
@@ -73,6 +83,9 @@ export class McpConfigWriter {
     if (targets.includes("codex")) {
       tasks.push(this.removeAllCodexManaged());
     }
+    if (targets.includes("cline")) {
+      tasks.push(this.removeServer(this.clineConfigPath, "mcpServers", CLINE_MCP_SERVER_NAME));
+    }
     await Promise.all(tasks);
   }
 
@@ -81,7 +94,8 @@ export class McpConfigWriter {
     await Promise.all([
       this.refreshIfOwned(join(this.workspaceRoot, ".vscode", "mcp.json"), "servers", server),
       this.refreshIfOwned(join(this.workspaceRoot, ".mcp.json"), "mcpServers", server),
-      this.refreshCodexIfOwned(server.name, url)
+      this.refreshCodexIfOwned(server.name, url),
+      this.refreshClineIfOwned(url)
     ]);
   }
 
@@ -102,7 +116,7 @@ export class McpConfigWriter {
   // JSON / JSONC 文件操作（.vscode/mcp.json、.mcp.json）
   // -----------------------------------------------------------------------
 
-  private async prepareUpsert(path: string, rootProperty: string, server: ManagedMcpServer): Promise<{ path: string; next: string }> {
+  private async prepareUpsert(path: string, rootProperty: string, server: ManagedMcpServer, transportType: string = "http"): Promise<{ path: string; next: string }> {
     await this.assertNotTracked(path);
     const source = (await readTextIfExists(path)) ?? "{}\n";
     const root = parseJsoncObject(source, path);
@@ -110,7 +124,7 @@ export class McpConfigWriter {
     if (current !== undefined && !isOwnedServer(current)) {
       throw new NetSuiteMcpError("mcp-name-conflict", `MCP 配置中的 ${server.name} 已由其他工具使用，扩展不会覆盖它。`);
     }
-    const value = { type: "http", url: server.url };
+    const value = { type: transportType, url: server.url };
     const next = applyEdits(source, modify(source, [rootProperty, server.name], value, { formattingOptions }));
     await ensureDirectory(dirname(path));
     return { path, next: next.endsWith("\n") ? next : `${next}\n` };
@@ -155,7 +169,7 @@ export class McpConfigWriter {
     }
   }
 
-  private async refreshIfOwned(path: string, rootProperty: string, server: ManagedMcpServer): Promise<void> {
+  private async refreshIfOwned(path: string, rootProperty: string, server: ManagedMcpServer, transportType: string = "http"): Promise<void> {
     const source = await readTextIfExists(path);
     if (!source) {
       return;
@@ -166,8 +180,25 @@ export class McpConfigWriter {
     if (!isOwnedServer(current)) {
       return;
     }
-    const next = applyEdits(source, modify(source, [rootProperty, server.name], { type: "http", url: server.url }, { formattingOptions }));
+    const next = applyEdits(source, modify(source, [rootProperty, server.name], { type: transportType, url: server.url }, { formattingOptions }));
     await atomicWriteFile(path, next.endsWith("\n") ? next : `${next}\n`);
+  }
+
+  private async refreshClineIfOwned(url: string): Promise<void> {
+    const source = await readTextIfExists(this.clineConfigPath);
+    if (!source) {
+      return;
+    }
+    await this.assertNotTracked(this.clineConfigPath);
+    const root = parseJsoncObject(source, this.clineConfigPath);
+    const current = getNestedObject(root, "mcpServers", CLINE_MCP_SERVER_NAME);
+    if (!isOwnedServer(current) || !hasMatchingProfilePath(current, url)) {
+      return;
+    }
+    const next = applyEdits(source, modify(source, ["mcpServers", CLINE_MCP_SERVER_NAME], { type: "streamableHttp", url }, { formattingOptions }));
+    if (next !== source) {
+      await atomicWriteFile(this.clineConfigPath, next.endsWith("\n") ? next : `${next}\n`);
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -207,7 +238,12 @@ export class McpConfigWriter {
   // -----------------------------------------------------------------------
 
   private async assertNotTracked(path: string): Promise<void> {
-    const repositoryPath = relative(this.workspaceRoot, path);
+    const workspaceRoot = resolve(this.workspaceRoot);
+    const absolutePath = resolve(path);
+    const repositoryPath = relative(workspaceRoot, absolutePath);
+    if (repositoryPath === ".." || repositoryPath.startsWith(`..${sep}`) || isAbsolute(repositoryPath)) {
+      return;
+    }
     try {
       await execFileAsync("git", ["ls-files", "--error-unmatch", "--", repositoryPath], { cwd: this.workspaceRoot, windowsHide: true });
       throw new NetSuiteMcpError("mcp-config-tracked", `${repositoryPath} 已被 Git 跟踪。扩展不会改写可能共享的 MCP 配置。请先将它改为本机配置。`);
@@ -248,7 +284,18 @@ function getNestedObject(root: Record<string, unknown>, rootProperty: string, na
 }
 
 function isOwnedServer(value: unknown): boolean {
-  return isObject(value) && value.type === "http" && typeof value.url === "string" && /^http:\/\/127\.0\.0\.1:\d+\//.test(value.url);
+  return isObject(value) && (value.type === "http" || value.type === "streamableHttp") && typeof value.url === "string" && /^http:\/\/127\.0\.0\.1:\d+\//.test(value.url);
+}
+
+function hasMatchingProfilePath(current: unknown, incomingUrl: string): boolean {
+  if (!isObject(current) || typeof current.url !== "string") {
+    return false;
+  }
+  try {
+    return new URL(current.url).pathname === new URL(incomingUrl).pathname;
+  } catch {
+    return false;
+  }
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

@@ -174,7 +174,11 @@ async function generateClientConfig(
   const state = await store.getState();
   const url = await manager.getMcpUrl(selected.profile.id);
   const server = await configWriter.install(targets, state.workspaceId, url);
-  await vscode.window.showInformationMessage(`已生成 MCP 配置：${server.name}`);
+  const configuredNames = [
+    ...(targets.some((target) => target !== "cline") ? [server.name] : []),
+    ...(targets.includes("cline") ? ["Cline（netsuite-mcp）"] : [])
+  ];
+  await vscode.window.showInformationMessage(`已生成 MCP 配置：${[...new Set(configuredNames)].join("、")}`);
 }
 
 async function disconnect(manager: ProfileManager, refreshStatus: () => Promise<void>): Promise<void> {
@@ -222,7 +226,8 @@ async function pickAgentTargets(title: string): Promise<AgentTarget[]> {
   const items: AgentPickItem[] = [
     { label: "VS Code Copilot", target: "vscode" },
     { label: "Claude Code", target: "claude-code" },
-    { label: "Codex", target: "codex" }
+    { label: "Codex", target: "codex" },
+    { label: "Cline（用户级）", target: "cline" }
   ];
   const picked = await vscode.window.showQuickPick(items, {
     title,

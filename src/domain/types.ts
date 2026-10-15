@@ -2,7 +2,7 @@ export const ENVIRONMENT_SCHEMA_VERSION = 3 as const;
 
 export type EnvironmentType = "sandbox" | "production";
 export type ProfileStatus = "draft" | "registered" | "verified";
-export type AgentTarget = "vscode" | "claude-code" | "codex";
+export type AgentTarget = "vscode" | "claude-code" | "codex" | "cline";
 
 export interface ConnectionProfile {
   id: string;

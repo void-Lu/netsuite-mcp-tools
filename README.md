@@ -2,7 +2,7 @@
 
 用于 Windows 本机 VS Code 的内部扩展：它通过 NetSuite OAuth 2.0 **Authorization Code + PKCE** 在独立浏览器用户目录中授权，在本机提供 Streamable HTTP MCP 代理，并为 VS Code Copilot、Claude Code、Codex CLI 与 Cline 生成无凭据的本地 MCP 配置。
 
-当前版本：**v0.3.4**。版本变更详见 `CHANGELOG.md`。
+当前版本：**v0.3.5**。版本变更详见 `CHANGELOG.md`。
 
 > 这不是 M2M 或 mTLS 客户端证书代理。扩展使用 NetSuite Public Client Integration，授权码、PKCE verifier、state、access token 与 refresh token 只在当前 VS Code Extension Host 内存中存在。
 

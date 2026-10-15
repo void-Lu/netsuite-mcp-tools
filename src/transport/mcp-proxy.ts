@@ -107,6 +107,13 @@ export class McpProxy {
         this.respond(response, 503, "该 MCP 连接未启用。请在 VS Code 中启动连接。");
         return;
       }
+      // Cline Streamable HTTP probes GET Accept: text/event-stream for SSE.
+      // Oracle returns 406; Cline only treats 405 as "no SSE" and otherwise reconnect-loops.
+      // Answer GET/HEAD locally — never forward to NetSuite.
+      if (request.method === "GET" || request.method === "HEAD") {
+        this.respondMethodNotAllowed(response);
+        return;
+      }
       const body = await readRequestBody(request);
       await this.forward(route, request, response, localUrl.search, body);
     } catch (error) {
@@ -205,6 +212,15 @@ export class McpProxy {
   private respond(response: ServerResponse, statusCode: number, message: string): void {
     response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
     response.end(JSON.stringify({ error: message }));
+  }
+
+  private respondMethodNotAllowed(response: ServerResponse): void {
+    response.writeHead(405, {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      allow: "POST"
+    });
+    response.end(JSON.stringify({ error: "MCP Streamable HTTP endpoint does not support GET/SSE; use POST." }));
   }
 
   private respondAuthorizationCallback(response: ServerResponse, statusCode: number, message: string): void {

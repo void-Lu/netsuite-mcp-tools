@@ -70,9 +70,54 @@ describe("McpProxy local boundary", () => {
     }), new RedactedLogger(join(root, "logs")));
     const port = await proxy.start(0);
 
-    const response = await fetch(`http://127.0.0.1:${port}/needs-auth/mcp`);
+    // POST triggers OAuth; GET is answered locally (see SSE probe test) and never reaches NetSuite.
+    const response = await fetch(`http://127.0.0.1:${port}/needs-auth/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} })
+    });
     expect(response.status).toBe(503);
     await expect(response.json()).resolves.toMatchObject({ error: expect.stringContaining("启动连接") });
+    expect(oauth.getAccessToken).toHaveBeenCalledTimes(1);
+    await proxy.stop();
+  });
+
+  it("answers MCP GET with 405 without OAuth or upstream (Cline SSE probe)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "netsuite-mcp-proxy-"));
+    roots.push(root);
+    const profile: ConnectionProfile = {
+      id: "sse-probe",
+      status: "verified",
+      clientId: "client",
+      createdAt: "2026-07-28T00:00:00.000Z"
+    };
+    const oauth = {
+      getAccessToken: vi.fn(async () => {
+        throw new Error("getAccessToken must not run for MCP GET");
+      })
+    } as unknown as OAuthClient;
+    const proxy = new McpProxy(
+      oauth,
+      async () => ({
+        profile,
+        endpoints: {
+          accountId: "9832121-sb1",
+          host: "9832121-sb1.suitetalk.api.netsuite.com",
+          authorizationUrl: "https://9832121-sb1.app.netsuite.com/app/login/oauth2/authorize.nl",
+          tokenUrl: "https://example.invalid/token",
+          mcpUrl: "https://example.invalid/mcp"
+        }
+      }),
+      new RedactedLogger(join(root, "logs"))
+    );
+    const port = await proxy.start(0);
+
+    const response = await fetch(`http://127.0.0.1:${port}/sse-probe/mcp`, {
+      headers: { Accept: "text/event-stream" }
+    });
+    expect(response.status).toBe(405);
+    expect(response.headers.get("allow")).toMatch(/POST/i);
+    expect(oauth.getAccessToken).not.toHaveBeenCalled();
     await proxy.stop();
   });
 });

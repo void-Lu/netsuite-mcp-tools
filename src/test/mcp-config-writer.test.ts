@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { parse } from "jsonc-parser";
 import { afterEach, describe, expect, it } from "vitest";
-import { CLINE_MCP_SERVER_NAME, McpConfigWriter, resolveClineSettingsPath } from "../config/mcp-config-writer";
+import { ANTIGRAVITY_MCP_SERVER_NAME, CLINE_MCP_SERVER_NAME, McpConfigWriter, resolveClineSettingsPath } from "../config/mcp-config-writer";
 
 const roots: string[] = [];
 const git = promisify(execFile);
@@ -217,7 +217,8 @@ describe("McpConfigWriter", () => {
 
 describe("McpConfigWriter Antigravity", () => {
   const workspaceId = "ws-antigravity";
-  const name = `netsuite-mcp-${workspaceId}`;
+  const name = ANTIGRAVITY_MCP_SERVER_NAME;
+  const legacyName = `netsuite-mcp-${workspaceId}`;
   const url = "http://127.0.0.1:51234/selected-profile/mcp";
 
   async function antigravityWorkspace() {
@@ -284,10 +285,9 @@ describe("McpConfigWriter Antigravity", () => {
     await writer.install(["antigravity"], workspaceId, url);
     const original = await readFile(path, "utf8");
     await writer.refreshExisting(workspaceId, "http://127.0.0.1:54321/another-profile/mcp");
-    await writer.refreshExisting("different-workspace", newUrl);
     expect(await readFile(path, "utf8")).toBe(original);
 
-    await writer.refreshExisting(workspaceId, newUrl);
+    await writer.refreshExisting("different-workspace", newUrl);
     expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ mcpServers: { [name]: { serverUrl: newUrl } } });
   });
 
@@ -408,6 +408,115 @@ describe("McpConfigWriter Antigravity", () => {
 
     await expect(readFile(path, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readFile(nestedIgnore, "utf8")).toBe("!/mcp_config.json\n");
+  });
+
+  it("migrates owned long-hash Antigravity entries to the short key and leaves others alone", async () => {
+    const { path, writer } = await antigravityWorkspace();
+    await mkdir(dirname(path));
+    const otherWorkspace = "netsuite-mcp-" + "ab".repeat(32);
+    const staleUrl = "http://127.0.0.1:51234/selected-profile/mcp";
+    const original = {
+      settings: { keep: true },
+      mcpServers: {
+        [legacyName]: { serverUrl: staleUrl, disabled: true },
+        [otherWorkspace]: { serverUrl: "http://127.0.0.1:52000/selected-profile/mcp" },
+        "netsuite-mcp-remote": { serverUrl: "https://example.com/selected-profile/mcp" },
+        other: { command: "other-tool" }
+      }
+    };
+    await writeFile(path, JSON.stringify(original, null, 2));
+
+    const newUrl = "http://127.0.0.1:54321/selected-profile/mcp";
+    await writer.install(["antigravity"], workspaceId, newUrl);
+
+    const config = JSON.parse(await readFile(path, "utf8")) as {
+      settings: { keep: boolean };
+      mcpServers: Record<string, { serverUrl?: string; command?: string; disabled?: boolean }>;
+    };
+    expect(config.settings).toEqual({ keep: true });
+    expect(config.mcpServers[name]).toEqual({ serverUrl: newUrl });
+    expect(config.mcpServers[legacyName]).toBeUndefined();
+    expect(config.mcpServers[otherWorkspace]).toBeUndefined();
+    expect(config.mcpServers["netsuite-mcp-remote"]).toEqual({ serverUrl: "https://example.com/selected-profile/mcp" });
+    expect(config.mcpServers.other).toEqual({ command: "other-tool" });
+  });
+
+  it("refreshes a short Antigravity URL and migrates a leftover long-hash entry on port change", async () => {
+    const { path, writer } = await antigravityWorkspace();
+    await mkdir(dirname(path));
+    await writeFile(path, JSON.stringify({
+      mcpServers: {
+        [legacyName]: { serverUrl: url },
+        other: { command: "other-tool" }
+      }
+    }, null, 2));
+
+    const newUrl = "http://127.0.0.1:54321/selected-profile/mcp";
+    await writer.refreshExisting(workspaceId, "http://127.0.0.1:54321/another-profile/mcp");
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
+      mcpServers: {
+        [legacyName]: { serverUrl: url },
+        other: { command: "other-tool" }
+      }
+    });
+
+    await writer.refreshExisting(workspaceId, newUrl);
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
+      mcpServers: {
+        [name]: { serverUrl: newUrl },
+        other: { command: "other-tool" }
+      }
+    });
+  });
+
+  it("updates a stale short Antigravity URL and removes a duplicate long-hash entry during refresh", async () => {
+    const { path, writer } = await antigravityWorkspace();
+    await mkdir(dirname(path));
+    await writeFile(path, JSON.stringify({
+      mcpServers: {
+        [name]: { serverUrl: url },
+        [legacyName]: { serverUrl: url }
+      }
+    }, null, 2));
+
+    const newUrl = "http://127.0.0.1:54321/selected-profile/mcp";
+    await writer.refreshExisting(workspaceId, newUrl);
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ mcpServers: { [name]: { serverUrl: newUrl } } });
+  });
+
+  it("cleans the short Antigravity key and leftover owned long-hash entries together", async () => {
+    const { path, writer } = await antigravityWorkspace();
+    await mkdir(dirname(path));
+    const otherServers = {
+      "netsuite-mcp-remote": { serverUrl: "https://example.com/selected-profile/mcp" },
+      "netsuite-mcp-stdio": { command: "other-tool" },
+      unrelated: { serverUrl: url }
+    };
+    await writeFile(path, JSON.stringify({
+      settings: true,
+      mcpServers: {
+        [name]: { serverUrl: url },
+        [legacyName]: { serverUrl: url },
+        ...otherServers
+      }
+    }, null, 2));
+
+    await writer.removeAllManaged(["antigravity"]);
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ settings: true, mcpServers: otherServers });
+  });
+
+  it("keeps Antigravity-prefixed tool names within the 64-character client limit", async () => {
+    const { path, writer } = await antigravityWorkspace();
+    const longWorkspaceId = "a".repeat(64);
+    await writer.install(["antigravity"], longWorkspaceId, url);
+    const config = JSON.parse(await readFile(path, "utf8")) as { mcpServers: Record<string, { serverUrl: string }> };
+    expect(Object.keys(config.mcpServers)).toEqual([name]);
+    const tools = ["ns_getRecord", "ns_runCustomSuiteQL", "ns_createRecord", "ns_updateRecord", "ns_deleteRecord"];
+    for (const tool of tools) {
+      const prefixed = `mcp_${name}_${tool}`;
+      expect(prefixed.length, prefixed).toBeLessThanOrEqual(64);
+    }
+    expect(`mcp_netsuite-mcp-${longWorkspaceId}_ns_getRecord`.length).toBeGreaterThan(64);
   });
 
   it("rejects an .agents link to a directory outside the workspace", async () => {

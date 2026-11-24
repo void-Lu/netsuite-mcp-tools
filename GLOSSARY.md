@@ -7,5 +7,5 @@
 **Cline 全局 MCP 项**：Cline 用户级设置中的唯一 NetSuite MCP 注册项，一次指向一个已选工作区 profile。
 _避免_：Cline 工作区级 MCP 项、每工作区 Cline 项
 
-**Antigravity 工作区 MCP 项**：Antigravity 在当前工作区使用的 NetSuite MCP 注册项，指向该工作区已选的 NetSuite 连接。
+**Antigravity 工作区 MCP 项**：Antigravity 在当前工作区 `.agents/mcp_config.json` 中使用的固定短键 `netsuite-mcp`，指向该工作区已选的 NetSuite 连接。
 _避免_：Antigravity 全局 MCP 项

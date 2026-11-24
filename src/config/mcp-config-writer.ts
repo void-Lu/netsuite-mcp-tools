@@ -11,6 +11,7 @@ const execFileAsync = promisify(execFile);
 const formattingOptions = { insertSpaces: true, tabSize: 2, eol: "\n" };
 const ANTIGRAVITY_CONFIG_PATH = ".agents/mcp_config.json";
 export const CLINE_MCP_SERVER_NAME = "netsuite-mcp";
+export const ANTIGRAVITY_MCP_SERVER_NAME = "netsuite-mcp";
 
 type JsonMcpFormat = "http" | "streamableHttp" | "antigravity";
 
@@ -53,7 +54,12 @@ export class McpConfigWriter {
     }
     const installAntigravity = targets.includes("antigravity");
     if (installAntigravity) {
-      changes.push(this.prepareUpsert(this.antigravityConfigPath, "mcpServers", server, "antigravity"));
+      changes.push(this.prepareUpsert(
+        this.antigravityConfigPath,
+        "mcpServers",
+        { name: ANTIGRAVITY_MCP_SERVER_NAME, url },
+        "antigravity"
+      ));
     }
     const results = await Promise.all(changes);
     if (installAntigravity) {
@@ -113,7 +119,7 @@ export class McpConfigWriter {
       this.refreshIfOwned(join(this.workspaceRoot, ".mcp.json"), "mcpServers", server),
       this.refreshCodexIfOwned(server.name, url),
       this.refreshClineIfOwned(url),
-      this.refreshIfOwned(this.antigravityConfigPath, "mcpServers", server, "antigravity").catch(() => {
+      this.refreshAntigravityIfOwned(url).catch(() => {
         // 无法安全刷新 Antigravity 配置时，仍继续刷新其他 Agent。
       })
     ]);
@@ -143,7 +149,10 @@ export class McpConfigWriter {
     if (current !== undefined && !ownedServerUrl(current, format)) {
       throw new NetSuiteMcpError("mcp-name-conflict", `MCP 配置中的 ${server.name} 已由其他工具使用，扩展不会覆盖它。`);
     }
-    const next = upsertJsonServer(source, rootProperty, server, format);
+    let next = upsertJsonServer(source, rootProperty, server, format);
+    if (format === "antigravity") {
+      next = removeOwnedLegacyAntigravityNames(next, path, rootProperty);
+    }
     await ensureDirectory(dirname(path));
     return { path, next: next.endsWith("\n") ? next : `${next}\n` };
   }
@@ -176,12 +185,52 @@ export class McpConfigWriter {
     let next = source;
     let changed = false;
     for (const name of Object.keys(group)) {
-      if (name.startsWith("netsuite-mcp-") && ownedServerUrl(group[name], format)) {
+      if (isAntigravityManagedName(name, format) && ownedServerUrl(group[name], format)) {
         next = applyEdits(next, modify(next, [rootProperty, name], undefined, { formattingOptions }));
         changed = true;
       }
     }
     if (changed) {
+      await atomicWriteFile(path, next.endsWith("\n") ? next : `${next}\n`);
+    }
+  }
+
+  private async refreshAntigravityIfOwned(url: string): Promise<void> {
+    const path = this.antigravityConfigPath;
+    const source = await readMcpConfig(path, "antigravity");
+    if (!source) {
+      return;
+    }
+    await this.assertNotTracked(path, "antigravity");
+    const group = parseMcpServers(source, path, "mcpServers", "antigravity");
+    if (!group) {
+      return;
+    }
+    const shortCurrent = group[ANTIGRAVITY_MCP_SERVER_NAME];
+    const shortUrl = ownedServerUrl(shortCurrent, "antigravity");
+    if (shortCurrent !== undefined && !shortUrl) {
+      return;
+    }
+    const hasMatchingLegacy = Object.entries(group).some(([name, value]) => {
+      if (!name.startsWith("netsuite-mcp-")) {
+        return false;
+      }
+      const ownedUrl = ownedServerUrl(value, "antigravity");
+      return Boolean(ownedUrl && hasMatchingProfilePath(ownedUrl, url));
+    });
+    let next = source;
+    if (shortUrl) {
+      if (hasMatchingProfilePath(shortUrl, url) && shortUrl !== url) {
+        next = upsertJsonServer(next, "mcpServers", { name: ANTIGRAVITY_MCP_SERVER_NAME, url }, "antigravity");
+      }
+      next = removeOwnedLegacyAntigravityNames(next, path, "mcpServers");
+    } else if (hasMatchingLegacy) {
+      next = upsertJsonServer(next, "mcpServers", { name: ANTIGRAVITY_MCP_SERVER_NAME, url }, "antigravity");
+      next = removeOwnedLegacyAntigravityNames(next, path, "mcpServers");
+    } else {
+      return;
+    }
+    if (next !== source) {
       await atomicWriteFile(path, next.endsWith("\n") ? next : `${next}\n`);
     }
   }
@@ -356,6 +405,27 @@ function parseMcpServers(source: string, path: string, rootProperty: string, for
   if (format === "antigravity" && group !== undefined) {
     throw new NetSuiteMcpError("invalid-mcp-config", `${path} 中的 ${rootProperty} 必须为对象，扩展没有改动该文件。`);
   }
+}
+
+function isAntigravityManagedName(name: string, format: JsonMcpFormat): boolean {
+  if (format === "antigravity") {
+    return name === ANTIGRAVITY_MCP_SERVER_NAME || name.startsWith("netsuite-mcp-");
+  }
+  return name.startsWith("netsuite-mcp-");
+}
+
+function removeOwnedLegacyAntigravityNames(source: string, path: string, rootProperty: string): string {
+  const group = parseMcpServers(source, path, rootProperty, "antigravity");
+  if (!group) {
+    return source;
+  }
+  let next = source;
+  for (const name of Object.keys(group)) {
+    if (name.startsWith("netsuite-mcp-") && ownedServerUrl(group[name], "antigravity")) {
+      next = applyEdits(next, modify(next, [rootProperty, name], undefined, { formattingOptions }));
+    }
+  }
+  return next;
 }
 
 function upsertJsonServer(source: string, rootProperty: string, server: ManagedMcpServer, format: JsonMcpFormat): string {

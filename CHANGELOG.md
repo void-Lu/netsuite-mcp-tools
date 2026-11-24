@@ -14,6 +14,7 @@
 
 ### 修复
 
+- **Antigravity 服务器短名**：`.agents/mcp_config.json` 现使用固定短键 `netsuite-mcp`，避免 Antigravity 将工具名拼成 `mcp_<server>_<tool>` 后超过 64 字符并丢弃全部 `ns_*` 工具。生成、端口刷新和清理会把本扩展托管的旧 `netsuite-mcp-<workspaceId>` 条目安全迁移或删除，同时更新过时的短名 URL，并保留其他服务器及未通过 loopback 所有权检查的条目。Antigravity 不读取项目 `.mcp.json`，该文件仍由 Claude Code 使用长名。
 - **Windows 路径大小写保护**：检查 Antigravity 配置是否被 Git 跟踪时忽略路径大小写，避免大小写不同的已跟踪路径被误覆盖。
 
 ## [0.3.5] - 2026-10-15

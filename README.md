@@ -75,7 +75,7 @@ VS Code 重启后，即使 `environment.json` 中 profile 标记为 `verified`�
 
 **Cline**（用户级）：配置写入 `mcpServers.netsuite-mcp`，类型为 `streamableHttp`，URL 是所选 profile 的完整本机 MCP 地址。路径默认为 `~/.cline/data/settings/cline_mcp_settings.json`，可通过 `CLINE_MCP_SETTINGS_PATH` 指定其他 settings 文件。Cline 只有一个全局 NetSuite MCP 条目；每次明确生成都会选择并替换为当前 profile。端口刷新仅更新路径匹配的 profile URL，不会切换到另一个 profile，也不会创建缺失条目。清理只删除通过 loopback 所有权检查的精确 `netsuite-mcp` 键，保留其他条目（包括 `netsuite-mcp-*`）。
 
-**Antigravity**（工作区级）使用 `.agents/mcp_config.json` 中 `mcpServers` 下的 `netsuite-mcp-<workspaceId>`，其中 `serverUrl` 指向所选连接的本机 MCP 地址。端口刷新仅更新 profile 路径匹配的现有受管条目。生成和清理会保留其他服务器，文件已被 Git 跟踪时会提示原因并保留原文件。
+**Antigravity**（工作区级）使用 `.agents/mcp_config.json` 中 `mcpServers` 下的固定短键 `netsuite-mcp`，其中 `serverUrl` 指向所选连接的本机 MCP 地址。短名可避免 Antigravity 将 `mcp_<server>_<tool>` 拼出超过 64 字符。生成和端口刷新会把本扩展托管的旧 `netsuite-mcp-<workspaceId>` 条目迁移为该短键，并更新 profile 路径匹配的现有受管条目。Antigravity 不读取项目 `.mcp.json`。生成和清理会保留其他服务器，文件已被 Git 跟踪时会提示原因并保留原文件。
 
 `environment.json` 只能保存非机密配置和扩展派生的文件元数据，可由管理员随项目共享给其他用户。`allocatedPorts` 会传递已验证工作区使用过的端口，帮助其他用户初始化新工作区时避让。若文件包含 private key、Client Secret、Certificate ID、JWT、token、认证头或其他未知字段，扩展会拒绝加载它。
 
@@ -86,7 +86,7 @@ VS Code 重启后，即使 `environment.json` 中 profile 标记为 `verified`�
 - **断开连接**：在已连接状态下，从下拉框选择 **断开连接**。扩展会清除当前工作区的内存 token、停止本机代理服务器，并将 profile 状态回退为 `registered`。已生成的 MCP 配置不会被自动清理，用户可在后续重新启动连接。
 - **重新授权**：在已连接状态下，从下拉框选择 **重新授权**。扩展会打开浏览器完成新一轮 OAuth 授权；在新的授权完成之前，旧的 token 仍然有效，不会提前清除。
 - 扩展不会自动撤销 NetSuite 远端 Integration 或其已授予的访问权限。
-- **清理 MCP 配置**操作会弹出多选下拉框。VS Code、Claude Code、Codex 和 Antigravity 会扫描对应配置并删除由本扩展托管的 `netsuite-mcp-*` 条目；Cline 只删除通过 loopback 所有权检查的精确 `netsuite-mcp` 键。其他配置均保留。
+- **清理 MCP 配置**操作会弹出多选下拉框。VS Code、Claude Code 和 Codex 会扫描对应配置并删除由本扩展托管的 `netsuite-mcp-*` 条目；Cline 只删除通过 loopback 所有权检查的精确 `netsuite-mcp` 键；Antigravity 会删除通过所有权检查的短键 `netsuite-mcp` 以及旧的 `netsuite-mcp-*` 托管条目。其他配置均保留。
 - 若复制项目到另一个 Windows 用户/设备，必须使用该设备的浏览器重新授权。
 
 ## 故障处理

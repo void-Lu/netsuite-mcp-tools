@@ -175,8 +175,9 @@ async function generateClientConfig(
   const url = await manager.getMcpUrl(selected.profile.id);
   const server = await configWriter.install(targets, state.workspaceId, url);
   const configuredNames = [
-    ...(targets.some((target) => target !== "cline") ? [server.name] : []),
-    ...(targets.includes("cline") ? ["Cline（netsuite-mcp）"] : [])
+    ...(targets.some((target) => target !== "cline" && target !== "antigravity") ? [server.name] : []),
+    ...(targets.includes("cline") ? ["Cline（netsuite-mcp）"] : []),
+    ...(targets.includes("antigravity") ? ["Antigravity（netsuite-mcp）"] : [])
   ];
   await vscode.window.showInformationMessage(`已生成 MCP 配置：${[...new Set(configuredNames)].join("、")}`);
 }

@@ -1,29 +1,36 @@
 import { execFile } from "node:child_process";
+import { lstat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { applyEdits, modify, parse, ParseError } from "jsonc-parser";
 import { AgentTarget, ManagedMcpServer, NetSuiteMcpError } from "../domain/types";
-import { atomicWriteFile, ensureDirectory, readTextIfExists } from "../util/files";
+import { atomicWriteFile, ensureDirectory, isNodeError, readTextIfExists } from "../util/files";
 
 const execFileAsync = promisify(execFile);
 const formattingOptions = { insertSpaces: true, tabSize: 2, eol: "\n" };
+const ANTIGRAVITY_CONFIG_PATH = ".agents/mcp_config.json";
 export const CLINE_MCP_SERVER_NAME = "netsuite-mcp";
+
+type JsonMcpFormat = "http" | "streamableHttp" | "antigravity";
 
 export function resolveClineSettingsPath(settingsPath: string | undefined = process.env.CLINE_MCP_SETTINGS_PATH, userHome: string = homedir()): string {
   return settingsPath || join(userHome, ".cline", "data", "settings", "cline_mcp_settings.json");
 }
 
 export class McpConfigWriter {
+  private readonly antigravityConfigPath: string;
+
   public constructor(
     private readonly workspaceRoot: string,
     private readonly codexConfigPath: string = join(workspaceRoot, ".codex", "config.toml"),
     private readonly clineConfigPath: string = resolveClineSettingsPath()
-  ) {}
+  ) {
+    this.antigravityConfigPath = join(workspaceRoot, ANTIGRAVITY_CONFIG_PATH);
+  }
 
   /**
-   * 写入工作区级 JSON 配置（.vscode/mcp.json 和 .mcp.json）和/或 Codex 项目级配置。
-   * targets 决定写入哪些 agent 的配置。
+   * 写入所选 Agent 的 MCP 配置。
    */
   public async install(
     targets: readonly AgentTarget[],
@@ -44,7 +51,14 @@ export class McpConfigWriter {
     if (targets.includes("cline")) {
       changes.push(this.prepareUpsert(this.clineConfigPath, "mcpServers", { name: CLINE_MCP_SERVER_NAME, url }, "streamableHttp"));
     }
+    const installAntigravity = targets.includes("antigravity");
+    if (installAntigravity) {
+      changes.push(this.prepareUpsert(this.antigravityConfigPath, "mcpServers", server, "antigravity"));
+    }
     const results = await Promise.all(changes);
+    if (installAntigravity) {
+      await this.ensureAntigravityGitIgnore();
+    }
     await Promise.all(results.map(({ path, next }) => writeIfChanged(path, next)));
     if (targets.includes("codex")) {
       await this.installCodex(workspaceId, url);
@@ -86,6 +100,9 @@ export class McpConfigWriter {
     if (targets.includes("cline")) {
       tasks.push(this.removeServer(this.clineConfigPath, "mcpServers", CLINE_MCP_SERVER_NAME));
     }
+    if (targets.includes("antigravity")) {
+      tasks.push(this.removeAllManagedInFile(this.antigravityConfigPath, "mcpServers", "antigravity"));
+    }
     await Promise.all(tasks);
   }
 
@@ -95,7 +112,10 @@ export class McpConfigWriter {
       this.refreshIfOwned(join(this.workspaceRoot, ".vscode", "mcp.json"), "servers", server),
       this.refreshIfOwned(join(this.workspaceRoot, ".mcp.json"), "mcpServers", server),
       this.refreshCodexIfOwned(server.name, url),
-      this.refreshClineIfOwned(url)
+      this.refreshClineIfOwned(url),
+      this.refreshIfOwned(this.antigravityConfigPath, "mcpServers", server, "antigravity").catch(() => {
+        // 无法安全刷新 Antigravity 配置时，仍继续刷新其他 Agent。
+      })
     ]);
   }
 
@@ -113,19 +133,17 @@ export class McpConfigWriter {
   }
 
   // -----------------------------------------------------------------------
-  // JSON / JSONC 文件操作（.vscode/mcp.json、.mcp.json）
+  // JSON / JSONC 文件操作
   // -----------------------------------------------------------------------
 
-  private async prepareUpsert(path: string, rootProperty: string, server: ManagedMcpServer, transportType: string = "http"): Promise<{ path: string; next: string }> {
-    await this.assertNotTracked(path);
-    const source = (await readTextIfExists(path)) ?? "{}\n";
-    const root = parseJsoncObject(source, path);
-    const current = getNestedObject(root, rootProperty, server.name);
-    if (current !== undefined && !isOwnedServer(current)) {
+  private async prepareUpsert(path: string, rootProperty: string, server: ManagedMcpServer, format: JsonMcpFormat = "http"): Promise<{ path: string; next: string }> {
+    await this.assertNotTracked(path, format);
+    const source = (await readMcpConfig(path, format)) ?? "{}\n";
+    const current = parseMcpServers(source, path, rootProperty, format)?.[server.name];
+    if (current !== undefined && !ownedServerUrl(current, format)) {
       throw new NetSuiteMcpError("mcp-name-conflict", `MCP 配置中的 ${server.name} 已由其他工具使用，扩展不会覆盖它。`);
     }
-    const value = { type: transportType, url: server.url };
-    const next = applyEdits(source, modify(source, [rootProperty, server.name], value, { formattingOptions }));
+    const next = upsertJsonServer(source, rootProperty, server, format);
     await ensureDirectory(dirname(path));
     return { path, next: next.endsWith("\n") ? next : `${next}\n` };
   }
@@ -138,28 +156,27 @@ export class McpConfigWriter {
     await this.assertNotTracked(path);
     const root = parseJsoncObject(source, path);
     const current = getNestedObject(root, rootProperty, name);
-    if (current === undefined || !isOwnedServer(current)) {
+    if (!ownedServerUrl(current)) {
       return;
     }
     const next = applyEdits(source, modify(source, [rootProperty, name], undefined, { formattingOptions }));
     await atomicWriteFile(path, next.endsWith("\n") ? next : `${next}\n`);
   }
 
-  private async removeAllManagedInFile(path: string, rootProperty: string): Promise<void> {
-    const source = await readTextIfExists(path);
-    if (!source) {
+  private async removeAllManagedInFile(path: string, rootProperty: string, format: JsonMcpFormat = "http"): Promise<void> {
+    const source = await readMcpConfig(path, format);
+    if (source === undefined || (source === "" && format !== "antigravity")) {
       return;
     }
-    await this.assertNotTracked(path);
-    const root = parseJsoncObject(source, path);
-    const group = root[rootProperty];
-    if (!isObject(group)) {
+    await this.assertNotTracked(path, format);
+    const group = parseMcpServers(source, path, rootProperty, format);
+    if (!group) {
       return;
     }
     let next = source;
     let changed = false;
     for (const name of Object.keys(group)) {
-      if (name.startsWith("netsuite-mcp-") && isOwnedServer(group[name])) {
+      if (name.startsWith("netsuite-mcp-") && ownedServerUrl(group[name], format)) {
         next = applyEdits(next, modify(next, [rootProperty, name], undefined, { formattingOptions }));
         changed = true;
       }
@@ -169,18 +186,21 @@ export class McpConfigWriter {
     }
   }
 
-  private async refreshIfOwned(path: string, rootProperty: string, server: ManagedMcpServer, transportType: string = "http"): Promise<void> {
-    const source = await readTextIfExists(path);
+  private async refreshIfOwned(path: string, rootProperty: string, server: ManagedMcpServer, format: JsonMcpFormat = "http"): Promise<void> {
+    const source = await readMcpConfig(path, format);
     if (!source) {
       return;
     }
-    await this.assertNotTracked(path);
-    const root = parseJsoncObject(source, path);
-    const current = getNestedObject(root, rootProperty, server.name);
-    if (!isOwnedServer(current)) {
+    await this.assertNotTracked(path, format);
+    const current = parseMcpServers(source, path, rootProperty, format)?.[server.name];
+    const currentUrl = ownedServerUrl(current, format);
+    if (!currentUrl) {
       return;
     }
-    const next = applyEdits(source, modify(source, [rootProperty, server.name], { type: transportType, url: server.url }, { formattingOptions }));
+    if (format === "antigravity" && (currentUrl === server.url || !hasMatchingProfilePath(currentUrl, server.url))) {
+      return;
+    }
+    const next = upsertJsonServer(source, rootProperty, server, format);
     await atomicWriteFile(path, next.endsWith("\n") ? next : `${next}\n`);
   }
 
@@ -191,8 +211,8 @@ export class McpConfigWriter {
     }
     await this.assertNotTracked(this.clineConfigPath);
     const root = parseJsoncObject(source, this.clineConfigPath);
-    const current = getNestedObject(root, "mcpServers", CLINE_MCP_SERVER_NAME);
-    if (!isOwnedServer(current) || !hasMatchingProfilePath(current, url)) {
+    const currentUrl = ownedServerUrl(getNestedObject(root, "mcpServers", CLINE_MCP_SERVER_NAME));
+    if (!currentUrl || !hasMatchingProfilePath(currentUrl, url)) {
       return;
     }
     const next = applyEdits(source, modify(source, ["mcpServers", CLINE_MCP_SERVER_NAME], { type: "streamableHttp", url }, { formattingOptions }));
@@ -237,15 +257,55 @@ export class McpConfigWriter {
   // 共享工具
   // -----------------------------------------------------------------------
 
-  private async assertNotTracked(path: string): Promise<void> {
+  private async ensureAntigravityGitIgnore(): Promise<void> {
+    const path = join(this.workspaceRoot, ".gitignore");
+    await assertNotSymlink(path);
+    const source = (await readTextIfExists(path)) ?? "";
+    const rule = `/${ANTIGRAVITY_CONFIG_PATH}`;
+    const lines = source.split(/\r?\n/);
+    if (lines.includes(rule) && await this.isAntigravityIgnored()) {
+      return;
+    }
+    if (source.trimEnd().split(/\r?\n/).at(-1) !== rule) {
+      const eol = source.includes("\r\n") ? "\r\n" : "\n";
+      const separator = source && !source.endsWith("\n") ? eol : "";
+      await atomicWriteFile(path, `${source}${separator}${rule}${eol}`);
+    }
+    if (!(await this.isAntigravityIgnored())) {
+      throw new NetSuiteMcpError("mcp-config-not-ignored", `${ANTIGRAVITY_CONFIG_PATH} 未被 Git 忽略。请检查工作区的 .gitignore 规则。`);
+    }
+  }
+
+  private async isAntigravityIgnored(): Promise<boolean> {
+    try {
+      await execFileAsync("git", ["check-ignore", "--no-index", "-q", "--", ANTIGRAVITY_CONFIG_PATH], {
+        cwd: this.workspaceRoot,
+        windowsHide: true,
+        env: { ...process.env, LC_ALL: "C" }
+      });
+      return true;
+    } catch (error) {
+      if (isObject(error) && error.code === 1) {
+        return false;
+      }
+      if (isObject(error) && error.code === 128 && typeof error.stderr === "string" && error.stderr.includes("not a git repository")) {
+        return true;
+      }
+      throw new NetSuiteMcpError("git-check-failed", `无法确认 ${ANTIGRAVITY_CONFIG_PATH} 是否被 Git 忽略。`, error);
+    }
+  }
+
+  private async assertNotTracked(path: string, format: JsonMcpFormat = "http"): Promise<void> {
     const workspaceRoot = resolve(this.workspaceRoot);
     const absolutePath = resolve(path);
     const repositoryPath = relative(workspaceRoot, absolutePath);
     if (repositoryPath === ".." || repositoryPath.startsWith(`..${sep}`) || isAbsolute(repositoryPath)) {
       return;
     }
+    // Windows 上同一 Antigravity 配置在 Git 索引中的路径大小写可能不同。
+    const pathspec = format === "antigravity" ? `:(icase,literal)${ANTIGRAVITY_CONFIG_PATH}` : repositoryPath;
     try {
-      await execFileAsync("git", ["ls-files", "--error-unmatch", "--", repositoryPath], { cwd: this.workspaceRoot, windowsHide: true });
+      await execFileAsync("git", ["ls-files", "--error-unmatch", "--", pathspec], { cwd: this.workspaceRoot, windowsHide: true });
       throw new NetSuiteMcpError("mcp-config-tracked", `${repositoryPath} 已被 Git 跟踪。扩展不会改写可能共享的 MCP 配置。请先将它改为本机配置。`);
     } catch (error) {
       if (error instanceof NetSuiteMcpError) {
@@ -269,6 +329,43 @@ export function managedServerName(workspaceId: string): string {
 // JSON / JSONC 辅助函数
 // ===========================================================================
 
+async function readMcpConfig(path: string, format: JsonMcpFormat): Promise<string | undefined> {
+  if (format === "antigravity") {
+    await assertNotSymlink(dirname(path));
+    await assertNotSymlink(path);
+  }
+  return readTextIfExists(path);
+}
+
+async function assertNotSymlink(path: string): Promise<void> {
+  const stats = await lstat(path).catch((error: unknown) => {
+    if (!isNodeError(error, "ENOENT")) {
+      throw error;
+    }
+  });
+  if (stats?.isSymbolicLink()) {
+    throw new NetSuiteMcpError("mcp-config-symlink", `${path} 是链接。Antigravity 配置必须位于当前工作区。`);
+  }
+}
+
+function parseMcpServers(source: string, path: string, rootProperty: string, format: JsonMcpFormat): Record<string, unknown> | undefined {
+  const group = parseJsoncObject(source, path)[rootProperty];
+  if (isObject(group)) {
+    return group;
+  }
+  if (format === "antigravity" && group !== undefined) {
+    throw new NetSuiteMcpError("invalid-mcp-config", `${path} 中的 ${rootProperty} 必须为对象，扩展没有改动该文件。`);
+  }
+}
+
+function upsertJsonServer(source: string, rootProperty: string, server: ManagedMcpServer, format: JsonMcpFormat): string {
+  const location = [rootProperty, server.name];
+  const edits = format === "antigravity"
+    ? modify(source, [...location, "serverUrl"], server.url, { formattingOptions })
+    : modify(source, location, { type: format, url: server.url }, { formattingOptions });
+  return applyEdits(source, edits);
+}
+
 function parseJsoncObject(source: string, path: string): Record<string, unknown> {
   const errors: ParseError[] = [];
   const parsed = parse(source, errors, { allowTrailingComma: true, disallowComments: false });
@@ -283,16 +380,25 @@ function getNestedObject(root: Record<string, unknown>, rootProperty: string, na
   return isObject(group) ? group[name] : undefined;
 }
 
-function isOwnedServer(value: unknown): boolean {
-  return isObject(value) && (value.type === "http" || value.type === "streamableHttp") && typeof value.url === "string" && /^http:\/\/127\.0\.0\.1:\d+\//.test(value.url);
+function ownedServerUrl(value: unknown, format: JsonMcpFormat = "http"): string | undefined {
+  if (!isObject(value)) {
+    return undefined;
+  }
+  if (format === "antigravity") {
+    if ("command" in value || value.type === "stdio" || typeof value.serverUrl !== "string") {
+      return undefined;
+    }
+    const route = /^http:\/\/127\.0\.0\.1:(\d{1,5})\/[^/?#\s\\]+\/mcp$/.exec(value.serverUrl);
+    return route && Number(route[1]) > 0 && Number(route[1]) <= 65535 ? value.serverUrl : undefined;
+  }
+  if ((value.type === "http" || value.type === "streamableHttp") && typeof value.url === "string" && /^http:\/\/127\.0\.0\.1:\d+\//.test(value.url)) {
+    return value.url;
+  }
 }
 
-function hasMatchingProfilePath(current: unknown, incomingUrl: string): boolean {
-  if (!isObject(current) || typeof current.url !== "string") {
-    return false;
-  }
+function hasMatchingProfilePath(currentUrl: string, incomingUrl: string): boolean {
   try {
-    return new URL(current.url).pathname === new URL(incomingUrl).pathname;
+    return new URL(currentUrl).pathname === new URL(incomingUrl).pathname;
   } catch {
     return false;
   }

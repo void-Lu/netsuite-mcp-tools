@@ -227,7 +227,8 @@ async function pickAgentTargets(title: string): Promise<AgentTarget[]> {
     { label: "VS Code Copilot", target: "vscode" },
     { label: "Claude Code", target: "claude-code" },
     { label: "Codex", target: "codex" },
-    { label: "Cline（用户级）", target: "cline" }
+    { label: "Cline（用户级）", target: "cline" },
+    { label: "Antigravity", target: "antigravity" }
   ];
   const picked = await vscode.window.showQuickPick(items, {
     title,

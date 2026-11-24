@@ -6,6 +6,16 @@
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-11-24
+
+### 新增
+
+- **Antigravity 工作区 MCP 配置**：在 Agent 配置生成和清理中支持 Antigravity，将 `serverUrl` 写入当前工作区 `.agents/mcp_config.json`。生成时补充 Git 忽略规则，并保护已跟踪配置和其他服务器条目。
+
+### 修复
+
+- **Windows 路径大小写保护**：检查 Antigravity 配置是否被 Git 跟踪时忽略路径大小写，避免大小写不同的已跟踪路径被误覆盖。
+
 ## [0.3.5] - 2026-10-15
 
 ### 修复

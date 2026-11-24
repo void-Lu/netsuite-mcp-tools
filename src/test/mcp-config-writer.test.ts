@@ -1,11 +1,14 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { promisify } from "node:util";
 import { parse } from "jsonc-parser";
 import { afterEach, describe, expect, it } from "vitest";
 import { CLINE_MCP_SERVER_NAME, McpConfigWriter, resolveClineSettingsPath } from "../config/mcp-config-writer";
 
 const roots: string[] = [];
+const git = promisify(execFile);
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -209,6 +212,216 @@ describe("McpConfigWriter", () => {
     await writer.removeAllManaged(["vscode", "claude-code"]);
 
     expect(await readFile(join(root, ".mcp.json"), "utf8")).toBe(original);
+  });
+});
+
+describe("McpConfigWriter Antigravity", () => {
+  const workspaceId = "ws-antigravity";
+  const name = `netsuite-mcp-${workspaceId}`;
+  const url = "http://127.0.0.1:51234/selected-profile/mcp";
+
+  async function antigravityWorkspace() {
+    const { root, codexPath } = await workspace();
+    const path = join(root, ".agents", "mcp_config.json");
+    const clinePath = join(root, "cline-settings.json");
+    const writer = new McpConfigWriter(root, codexPath, clinePath);
+    return { root, path, writer };
+  }
+
+  it("creates only the selected workspace config and adds a Git ignore rule to an existing workspace", async () => {
+    const { root, path, writer } = await antigravityWorkspace();
+    const ignorePath = join(root, ".gitignore");
+    const originalIgnore = "# Keep these rules\r\n/.mcp.json";
+    await git("git", ["init", "-q"], { cwd: root });
+    await writeFile(ignorePath, originalIgnore);
+
+    await writer.install(["claude-code"], workspaceId, url);
+    await expect(readFile(path, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(ignorePath, "utf8")).toBe(originalIgnore);
+    const claudePath = join(root, ".mcp.json");
+    const claudeConfig = await readFile(claudePath, "utf8");
+
+    await mkdir(dirname(path));
+    const sibling = join(dirname(path), "workflow.md");
+    await writeFile(sibling, "Existing workflow");
+    await writer.install(["antigravity"], workspaceId, url);
+    await writer.install(["antigravity"], workspaceId, url);
+
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ mcpServers: { [name]: { serverUrl: url } } });
+    expect(await readFile(ignorePath, "utf8")).toBe(`${originalIgnore}\r\n/.agents/mcp_config.json\r\n`);
+    await expect(git("git", ["check-ignore", "-q", "--", ".agents/mcp_config.json"], { cwd: root })).resolves.toBeDefined();
+    await expect(git("git", ["check-ignore", "-q", "--", ".agents/workflow.md"], { cwd: root })).rejects.toMatchObject({ code: 1 });
+    expect(await readFile(sibling, "utf8")).toBe("Existing workflow");
+    expect(await readFile(claudePath, "utf8")).toBe(claudeConfig);
+  });
+
+  it("changes the selected connection on generation while keeping sibling servers and settings", async () => {
+    const { path, writer } = await antigravityWorkspace();
+    await mkdir(dirname(path));
+    const original = {
+      settings: { keep: true },
+      mcpServers: {
+        [name]: { serverUrl: url, disabled: true },
+        other: { command: "other-tool" }
+      }
+    };
+    await writeFile(path, JSON.stringify(original, null, 2));
+
+    const newUrl = "http://127.0.0.1:54321/another-profile/mcp";
+    await writer.install(["antigravity"], workspaceId, newUrl);
+
+    original.mcpServers[name].serverUrl = newUrl;
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual(original);
+  });
+
+  it("refreshes only an existing Antigravity URL for the matching profile", async () => {
+    const { path, writer } = await antigravityWorkspace();
+    const newUrl = "http://127.0.0.1:54321/selected-profile/mcp";
+    await writer.refreshExisting(workspaceId, newUrl);
+    await writer.removeAllManaged(["antigravity"]);
+    await expect(readFile(path, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+
+    await writer.install(["antigravity"], workspaceId, url);
+    const original = await readFile(path, "utf8");
+    await writer.refreshExisting(workspaceId, "http://127.0.0.1:54321/another-profile/mcp");
+    await writer.refreshExisting("different-workspace", newUrl);
+    expect(await readFile(path, "utf8")).toBe(original);
+
+    await writer.refreshExisting(workspaceId, newUrl);
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ mcpServers: { [name]: { serverUrl: newUrl } } });
+  });
+
+  it("cleans only managed loopback MCP routes from the selected Agent", async () => {
+    const { path, writer } = await antigravityWorkspace();
+    await mkdir(dirname(path));
+    const otherServers = {
+      "netsuite-mcp-remote": { serverUrl: "https://example.com/selected-profile/mcp" },
+      "netsuite-mcp-stdio": { command: "other-tool" },
+      "netsuite-mcp-loopback": { serverUrl: "http://127.0.0.1:51234/another-service" },
+      unrelated: { serverUrl: url }
+    };
+    const original = JSON.stringify({ settings: true, mcpServers: { [name]: { serverUrl: url }, ...otherServers } }, null, 2);
+    await writeFile(path, original);
+
+    await writer.removeAllManaged(["claude-code"]);
+    expect(await readFile(path, "utf8")).toBe(original);
+    await writer.removeAllManaged(["antigravity"]);
+
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ settings: true, mcpServers: otherServers });
+  });
+
+  it.each([
+    { serverUrl: "https://example.com/selected-profile/mcp" },
+    { command: "other-tool" },
+    { command: "other-tool", serverUrl: url },
+    { serverUrl: "http://127.0.0.1:51234/another-service" }
+  ])("preserves a conflicting Antigravity entry %j", async (foreign) => {
+    const { root, path, writer } = await antigravityWorkspace();
+    await mkdir(dirname(path));
+    const original = JSON.stringify({ mcpServers: { [name]: foreign } });
+    await writeFile(path, original);
+
+    await expect(writer.install(["antigravity"], workspaceId, url)).rejects.toMatchObject({ code: "mcp-name-conflict" });
+    await writer.refreshExisting(workspaceId, "http://127.0.0.1:54321/selected-profile/mcp");
+    await writer.removeAllManaged(["antigravity"]);
+    expect(await readFile(path, "utf8")).toBe(original);
+    await expect(readFile(join(root, ".gitignore"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each(["", "{ broken", "[]", '{"mcpServers": []}', '{"mcpServers": null}'])(
+    "reports an invalid Antigravity config %j and preserves its contents", async (original) => {
+      const { path, writer } = await antigravityWorkspace();
+      await mkdir(dirname(path));
+      await writeFile(path, original);
+
+      await expect(writer.install(["antigravity"], workspaceId, url)).rejects.toMatchObject({ code: "invalid-mcp-config" });
+      await expect(writer.removeAllManaged(["antigravity"])).rejects.toMatchObject({ code: "invalid-mcp-config" });
+      expect(await readFile(path, "utf8")).toBe(original);
+    }
+  );
+
+  it("protects tracked Antigravity config while other Agents can still refresh", async () => {
+    const { root, path, writer } = await antigravityWorkspace();
+    await git("git", ["init", "-q"], { cwd: root });
+    await mkdir(dirname(path));
+    const original = JSON.stringify({ mcpServers: { [name]: { serverUrl: url } } });
+    await writeFile(path, original);
+    await git("git", ["add", "-f", "--", ".agents/mcp_config.json"], { cwd: root });
+
+    const newUrl = "http://127.0.0.1:54321/selected-profile/mcp";
+    await expect(writer.install(["claude-code", "antigravity"], workspaceId, newUrl)).rejects.toMatchObject({ code: "mcp-config-tracked" });
+    await expect(writer.removeAllManaged(["antigravity"])).rejects.toMatchObject({ code: "mcp-config-tracked" });
+    await expect(readFile(join(root, ".gitignore"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    const claudePath = join(root, ".mcp.json");
+    await expect(readFile(claudePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+
+    await writer.install(["claude-code"], workspaceId, url);
+    await writer.refreshExisting(workspaceId, newUrl);
+    expect(await readFile(claudePath, "utf8")).toContain(newUrl);
+    expect(await readFile(path, "utf8")).toBe(original);
+  });
+
+  it("protects an Antigravity config tracked under a differently cased directory", async () => {
+    const { root, path, writer } = await antigravityWorkspace();
+    await git("git", ["init", "-q"], { cwd: root });
+    await git("git", ["config", "core.ignorecase", "true"], { cwd: root });
+    const trackedPath = join(root, ".Agents", "mcp_config.json");
+    await mkdir(dirname(trackedPath));
+    const original = JSON.stringify({ mcpServers: { [name]: { serverUrl: url } } });
+    await writeFile(trackedPath, original);
+    await git("git", ["add", "-f", "--", ".Agents/mcp_config.json"], { cwd: root });
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, original);
+
+    const newUrl = "http://127.0.0.1:54321/selected-profile/mcp";
+    await expect(writer.install(["antigravity"], workspaceId, newUrl)).rejects.toMatchObject({ code: "mcp-config-tracked" });
+    await expect(writer.removeAllManaged(["antigravity"])).rejects.toMatchObject({ code: "mcp-config-tracked" });
+    await writer.refreshExisting(workspaceId, newUrl);
+
+    expect(await readFile(path, "utf8")).toBe(original);
+    await expect(readFile(join(root, ".gitignore"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps the generated config ignored when a workspace rule previously re-included it", async () => {
+    const { root, writer } = await antigravityWorkspace();
+    const ignorePath = join(root, ".gitignore");
+    const rule = "/.agents/mcp_config.json\n";
+    const original = `${rule}!${rule}`;
+    await git("git", ["init", "-q"], { cwd: root });
+    await writeFile(ignorePath, original);
+
+    await writer.install(["antigravity"], workspaceId, url);
+    await writer.install(["antigravity"], workspaceId, url);
+
+    expect(await readFile(ignorePath, "utf8")).toBe(`${original}${rule}`);
+    await expect(git("git", ["check-ignore", "-q", "--", ".agents/mcp_config.json"], { cwd: root })).resolves.toBeDefined();
+  });
+
+  it("keeps the config unwritten when a nested rule re-includes it", async () => {
+    const { root, path, writer } = await antigravityWorkspace();
+    await git("git", ["init", "-q"], { cwd: root });
+    await mkdir(dirname(path));
+    const nestedIgnore = join(dirname(path), ".gitignore");
+    await writeFile(nestedIgnore, "!/mcp_config.json\n");
+
+    await expect(writer.install(["antigravity"], workspaceId, url)).rejects.toMatchObject({ code: "mcp-config-not-ignored" });
+
+    await expect(readFile(path, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(nestedIgnore, "utf8")).toBe("!/mcp_config.json\n");
+  });
+
+  it("rejects an .agents link to a directory outside the workspace", async () => {
+    const { path, writer } = await antigravityWorkspace();
+    const { root: outside } = await workspace();
+    await symlink(outside, dirname(path), process.platform === "win32" ? "junction" : "dir");
+    const outsidePath = join(outside, "mcp_config.json");
+    const original = JSON.stringify({ mcpServers: { [name]: { serverUrl: url } } });
+    await writeFile(outsidePath, original);
+
+    await expect(writer.install(["antigravity"], workspaceId, url)).rejects.toMatchObject({ code: "mcp-config-symlink" });
+    await expect(writer.removeAllManaged(["antigravity"])).rejects.toMatchObject({ code: "mcp-config-symlink" });
+    await writer.refreshExisting(workspaceId, "http://127.0.0.1:54321/selected-profile/mcp");
+    expect(await readFile(outsidePath, "utf8")).toBe(original);
   });
 });
 

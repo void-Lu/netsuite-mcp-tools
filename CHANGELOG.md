@@ -4,9 +4,7 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
-
-## [0.3.6] - 2026-11-24
+## [0.3.6] - 2026-11-25
 
 ### 新增
 
@@ -16,6 +14,10 @@
 
 - **Antigravity 服务器短名**：`.agents/mcp_config.json` 现使用固定短键 `netsuite-mcp`，避免 Antigravity 将工具名拼成 `mcp_<server>_<tool>` 后超过 64 字符并丢弃全部 `ns_*` 工具。生成、端口刷新和清理会把本扩展托管的旧 `netsuite-mcp-<workspaceId>` 条目安全迁移或删除，同时更新过时的短名 URL，并保留其他服务器及未通过 loopback 所有权检查的条目。Antigravity 不读取项目 `.mcp.json`，该文件仍由 Claude Code 使用长名。
 - **Windows 路径大小写保护**：检查 Antigravity 配置是否被 Git 跟踪时忽略路径大小写，避免大小写不同的已跟踪路径被误覆盖。
+
+### 变更
+
+- **关闭 VS Code 保留未过期 Token**：关闭只断开本机代理，Token 留在 VS Code SecretStorage。再次打开时，距过期超过 5 分钟直接续连；已过期或进入 5 分钟窗口则静默刷新一次，失败会清除凭据。只有「断开连接」或删除档案会主动清除凭据。
 
 ## [0.3.5] - 2026-10-15
 
@@ -122,4 +124,3 @@
 - MCP 配置写入：自动生成 `.vscode/mcp.json` 和 `.mcp.json`，支持 JSONC 注释，不覆盖非本扩展管理的条目。
 - 端口分配隔离：跨工作区端口冲突检测和共享端口索引。
 - 脱敏日志：profile ID、token、client ID 等敏感信息在日志中自动脱敏。
-

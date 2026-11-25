@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,6 +28,58 @@ describe("McpProxy local boundary", () => {
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ error: expect.stringContaining("未启用") });
     await proxy.stop();
+  });
+
+  it("returns an upstream 401 once and expires only the access token that request used", async () => {
+    const root = await mkdtemp(join(tmpdir(), "netsuite-mcp-proxy-401-"));
+    roots.push(root);
+    const hits: string[] = [];
+    const upstream = createServer((request, response) => {
+      hits.push(`${request.method} ${request.url}`);
+      response.writeHead(401, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "expired" }));
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", () => resolve()));
+    const address = upstream.address();
+    if (!address || typeof address === "string") {
+      throw new Error("upstream port missing");
+    }
+    const profile: ConnectionProfile = {
+      id: "verified-profile",
+      status: "verified",
+      clientId: "client",
+      createdAt: "2026-07-28T00:00:00.000Z"
+    };
+    const oauth = {
+      getAccessToken: vi.fn(async () => "used-access-token"),
+      invalidateAccessToken: vi.fn(async () => undefined)
+    } as unknown as OAuthClient;
+    const proxy = new McpProxy(oauth, async () => ({
+      profile,
+      endpoints: {
+        accountId: "9832121-sb1",
+        host: "9832121-sb1.suitetalk.api.netsuite.com",
+        authorizationUrl: "https://9832121-sb1.app.netsuite.com/app/login/oauth2/authorize.nl",
+        tokenUrl: "https://example.invalid/token",
+        mcpUrl: `http://127.0.0.1:${address.port}/services/mcp`
+      }
+    }), new RedactedLogger(join(root, "logs")));
+    try {
+      const port = await proxy.start(0);
+      const response = await fetch(`http://127.0.0.1:${port}/${profile.id}/mcp`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} })
+      });
+      expect(response.status).toBe(401);
+      await expect(response.json()).resolves.toEqual({ error: "expired" });
+      expect(hits).toEqual(["POST /services/mcp"]);
+      expect(oauth.invalidateAccessToken).toHaveBeenCalledTimes(1);
+      expect(oauth.invalidateAccessToken).toHaveBeenCalledWith(profile.id, "used-access-token");
+    } finally {
+      await proxy.stop();
+      await new Promise<void>((resolve, reject) => upstream.close((error) => error ? reject(error) : resolve()));
+    }
   });
 
   it("handles OAuth callbacks only on the exact loopback callback route", async () => {

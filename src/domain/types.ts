@@ -52,14 +52,14 @@ export interface TokenValue {
   accessToken: string;
   expiresAt: number;
   /**
-   * refresh token 仅保存在 OAuthClient 的内存缓存中；绝不写入日志或配置文件。
+   * refresh token 不写入日志或配置文件。可随 access token 进入注入的凭据存储。
    */
   refreshToken?: string;
   /**
-   * 创建此内存 token 时 token 端点返回的 HTTP 状态。它不包含任何响应内容，
-   * 仅供零数据健康检查记录脱敏诊断。
+   * token 端点返回的 HTTP 状态。恢复自凭据库的条目没有该字段，不得编造。
+   * 它不包含任何响应内容，仅供零数据健康检查记录脱敏诊断。
    */
-  httpStatus: number;
+  httpStatus?: number;
 }
 
 export interface HealthCheckResult {

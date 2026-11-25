@@ -190,70 +190,73 @@ export class McpProxy {
           headers
         },
         (upstreamResponse) => {
-          if (upstreamResponse.statusCode === 401) {
-            // 绝不重放 MCP 工具调用：它可能已在服务端产生写入副作用。仅使当前
-            // 内存 access token 过期，让下一次独立请求按正常刷新路径取得新 token。
-            this.oauthClient.invalidateAccessToken(route.profile.id);
-          }
-          const statusCode = upstreamResponse.statusCode ?? 502;
-          // Buffer tools/list sanitize, or 4xx JSON-RPC errors that must become HTTP 200
-          // for Streamable HTTP clients (Cline reconnects on non-2xx).
-          const mayNormalizeJsonRpcError = statusCode >= 400 && statusCode !== 401;
-          const bufferResponse = sanitizeToolsList || mayNormalizeJsonRpcError;
+          const relay = (): void => {
+            const statusCode = upstreamResponse.statusCode ?? 502;
+            // Buffer tools/list sanitize, or 4xx JSON-RPC errors that must become HTTP 200
+            // for Streamable HTTP clients (Cline reconnects on non-2xx).
+            const mayNormalizeJsonRpcError = statusCode >= 400 && statusCode !== 401;
+            const bufferResponse = sanitizeToolsList || mayNormalizeJsonRpcError;
 
-          const logAndResolve = (finalStatus: number): void => {
-            void this.logger.info("proxy_request", {
-              profile: route.profile.id.slice(0, 8),
-              statusCode: finalStatus,
-              method: request.method,
-              sanitizedToolsList: sanitizeToolsList,
-              normalizedJsonRpcErrorHttp: mayNormalizeJsonRpcError && finalStatus === 200 && statusCode >= 400
+            const logAndResolve = (finalStatus: number): void => {
+              void this.logger.info("proxy_request", {
+                profile: route.profile.id.slice(0, 8),
+                statusCode: finalStatus,
+                method: request.method,
+                sanitizedToolsList: sanitizeToolsList,
+                normalizedJsonRpcErrorHttp: mayNormalizeJsonRpcError && finalStatus === 200 && statusCode >= 400
+              });
+              resolve();
+            };
+
+            if (!bufferResponse) {
+              const responseHeaders = filterResponseHeaders(upstreamResponse.headers);
+              response.writeHead(statusCode, responseHeaders);
+              upstreamResponse.pipe(response);
+              upstreamResponse.once("end", () => logAndResolve(statusCode));
+              upstreamResponse.once("error", reject);
+              return;
+            }
+
+            const chunks: Buffer[] = [];
+            upstreamResponse.on("data", (chunk: Buffer | string) => {
+              chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
             });
-            resolve();
-          };
-
-          if (!bufferResponse) {
-            const responseHeaders = filterResponseHeaders(upstreamResponse.headers);
-            response.writeHead(statusCode, responseHeaders);
-            upstreamResponse.pipe(response);
-            upstreamResponse.once("end", () => logAndResolve(statusCode));
             upstreamResponse.once("error", reject);
+            upstreamResponse.once("end", () => {
+              try {
+                const compressed = Buffer.concat(chunks);
+                const rawBuffer = decodeContentEncoding(compressed, upstreamResponse.headers["content-encoding"]);
+                let outBuffer = rawBuffer;
+                let finalStatus = statusCode;
+
+                if (sanitizeToolsList) {
+                  outBuffer = Buffer.from(sanitizeToolsListResponseBody(rawBuffer.toString("utf8")), "utf8");
+                } else if (shouldNormalizeJsonRpcErrorHttpStatus(statusCode, rawBuffer.toString("utf8"))) {
+                  finalStatus = 200;
+                }
+
+                const responseHeaders = filterResponseHeaders(upstreamResponse.headers);
+                delete responseHeaders["transfer-encoding"];
+                delete responseHeaders["content-length"];
+                delete responseHeaders["content-encoding"];
+                responseHeaders["content-length"] = String(outBuffer.byteLength);
+                if (!responseHeaders["content-type"]) {
+                  responseHeaders["content-type"] = "application/json; charset=utf-8";
+                }
+                response.writeHead(finalStatus, responseHeaders);
+                response.end(outBuffer);
+                logAndResolve(finalStatus);
+              } catch (error) {
+                reject(error instanceof Error ? error : new Error(String(error)));
+              }
+            });
+          };
+          if (upstreamResponse.statusCode !== 401) {
+            relay();
             return;
           }
-
-          const chunks: Buffer[] = [];
-          upstreamResponse.on("data", (chunk: Buffer | string) => {
-            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-          });
-          upstreamResponse.once("error", reject);
-          upstreamResponse.once("end", () => {
-            try {
-              const compressed = Buffer.concat(chunks);
-              const rawBuffer = decodeContentEncoding(compressed, upstreamResponse.headers["content-encoding"]);
-              let outBuffer = rawBuffer;
-              let finalStatus = statusCode;
-
-              if (sanitizeToolsList) {
-                outBuffer = Buffer.from(sanitizeToolsListResponseBody(rawBuffer.toString("utf8")), "utf8");
-              } else if (shouldNormalizeJsonRpcErrorHttpStatus(statusCode, rawBuffer.toString("utf8"))) {
-                finalStatus = 200;
-              }
-
-              const responseHeaders = filterResponseHeaders(upstreamResponse.headers);
-              delete responseHeaders["transfer-encoding"];
-              delete responseHeaders["content-length"];
-              delete responseHeaders["content-encoding"];
-              responseHeaders["content-length"] = String(outBuffer.byteLength);
-              if (!responseHeaders["content-type"]) {
-                responseHeaders["content-type"] = "application/json; charset=utf-8";
-              }
-              response.writeHead(finalStatus, responseHeaders);
-              response.end(outBuffer);
-              logAndResolve(finalStatus);
-            } catch (error) {
-              reject(error instanceof Error ? error : new Error(String(error)));
-            }
-          });
+          // 绝不重放 MCP 工具调用。先等已保存 access token 过期写完（保留 refresh token），再原样返回本次 401。
+          void this.oauthClient.invalidateAccessToken(route.profile.id, token).then(relay, reject);
         }
       );
       upstream.once("error", reject);

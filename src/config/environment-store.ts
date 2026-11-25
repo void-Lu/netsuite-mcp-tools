@@ -28,7 +28,7 @@ export type ConfigurationTemplateResult = "initialized" | "completed" | "unchang
 
 /**
  * 环境文件仅保存可审阅的 Public Client 元数据。本机 OAuth 的 state、PKCE
- * verifier、access/refresh token 均由 OAuthClient 持有，绝不写入此处。
+ * verifier、access/refresh token 均不写入此处。token 只进入注入的凭据存储。
  */
 export class EnvironmentStore {
   public readonly paths: WorkspacePaths;

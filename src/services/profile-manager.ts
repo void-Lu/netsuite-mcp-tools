@@ -28,7 +28,17 @@ export class ProfileManager {
   public async initialize(): Promise<void> {
     await this.portManager.synchronizeAllocatedPorts();
     const profiles = await this.listProfiles();
-    if (profiles.some(({ profile }) => profile.status === "verified")) {
+    for (const { environment, profile } of profiles) {
+      if (profile.status !== "verified") {
+        continue;
+      }
+      try {
+        await this.oauthClient.restorePersistedSession(profile, buildNetSuiteEndpoints(environment.accountId));
+      } catch {
+        // 单个档案恢复失败不能把激活标成代理故障。预期失败已在 OAuthClient 内消化。
+      }
+    }
+    if (profiles.some(({ profile }) => this.hasActiveSession(profile.id))) {
       await this.ensureProxyStarted();
     }
   }
@@ -83,8 +93,9 @@ export class ProfileManager {
   public async disconnect(): Promise<void> {
     const profiles = await this.listProfiles();
     for (const { profile } of profiles) {
+      await this.oauthClient.deleteStoredToken(profile.id);
+      this.oauthClient.invalidate(profile.id);
       if (profile.status === "verified") {
-        this.oauthClient.invalidate(profile.id);
         await this.store.markRegistered(profile.id);
       }
     }
@@ -92,6 +103,7 @@ export class ProfileManager {
   }
 
   public async remove(profileId: string): Promise<ProfileSummary> {
+    await this.oauthClient.deleteStoredToken(profileId);
     this.oauthClient.invalidate(profileId);
     return this.store.removeProfile(profileId);
   }
@@ -132,7 +144,7 @@ export class ProfileManager {
   }
 
   public async stop(): Promise<void> {
-    this.oauthClient.clear();
+    await this.oauthClient.clear();
     await this.proxy.stop();
   }
 

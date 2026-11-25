@@ -13,7 +13,7 @@ interface HealthCheckPhaseDefinition {
 
 interface HealthCheckPhaseResult<T> {
   value: T;
-  httpStatus: number;
+  httpStatus: number | null;
 }
 
 export interface HealthCheckLogger {

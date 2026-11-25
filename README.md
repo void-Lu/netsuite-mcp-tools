@@ -83,7 +83,8 @@ VS Code 重启后，即使 `environment.json` 中 profile 标记为 `verified`�
 
 ## 断开连接与重新授权
 
-- **断开连接**：在已连接状态下，从下拉框选择 **断开连接**。扩展会清除当前工作区的内存 token、停止本机代理服务器，并将 profile 状态回退为 `registered`。已生成的 MCP 配置不会被自动清理，用户可在后续重新启动连接。
+- **关闭 VS Code**：只停止本机代理并取消未完成的授权。不删除已保存的 Token，也不把已验证档案降为 `registered`。再次打开时，距过期超过 5 分钟的 Token 直接续连，不重新登录、不向 NetSuite 换新 Token。已过期或不足 5 分钟则静默刷新一次；失败才清除凭据，且不弹浏览器。
+- **断开连接**：在已连接状态下，从下拉框选择 **断开连接**。扩展会删除本机凭据库中的 Token、停止本机代理，并将 profile 状态回退为 `registered`。关闭窗口不等于断开。已生成的 MCP 配置不会被自动清理，用户可在后续重新启动连接。
 - **重新授权**：在已连接状态下，从下拉框选择 **重新授权**。扩展会打开浏览器完成新一轮 OAuth 授权；在新的授权完成之前，旧的 token 仍然有效，不会提前清除。
 - 扩展不会自动撤销 NetSuite 远端 Integration 或其已授予的访问权限。
 - **清理 MCP 配置**操作会弹出多选下拉框。VS Code、Claude Code 和 Codex 会扫描对应配置并删除由本扩展托管的 `netsuite-mcp-*` 条目；Cline 只删除通过 loopback 所有权检查的精确 `netsuite-mcp` 键；Antigravity 会删除通过所有权检查的短键 `netsuite-mcp` 以及旧的 `netsuite-mcp-*` 托管条目。其他配置均保留。

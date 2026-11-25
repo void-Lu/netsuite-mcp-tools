@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { EnvironmentStore } from "./config/environment-store";
 import { McpConfigWriter } from "./config/mcp-config-writer";
-import { OAuthClient } from "./net/oauth-client";
+import { OAuthClient, tokenSecretKey, TokenSecretStore } from "./net/oauth-client";
 import { HealthCheckService } from "./services/health-check";
 import { VsCodeAllocatedPortRegistry } from "./services/vscode-allocated-port-registry";
 import { PortManager } from "./services/port-manager";
@@ -18,9 +18,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     return;
   }
   const store = new EnvironmentStore(workspaceRoot);
-  await store.load();
+  const loaded = await store.load();
   const logger = new RedactedLogger(store.paths.logsDirectory);
-  const oauthClient = new OAuthClient();
+  const oauthClient = new OAuthClient(fetch, new VsCodeTokenSecretStore(context.secrets, loaded.workspaceId), logger);
   const healthCheck = new HealthCheckService(oauthClient, fetch, logger);
   const portManager = new PortManager(store, new VsCodeAllocatedPortRegistry());
   const profileManagerRef: { current?: ProfileManager } = {};
@@ -109,4 +109,23 @@ function getSupportedWorkspaceRoot(): string | undefined {
     return undefined;
   }
   return folders[0].uri.fsPath;
+}
+
+class VsCodeTokenSecretStore implements TokenSecretStore {
+  public constructor(
+    private readonly secrets: vscode.SecretStorage,
+    private readonly workspaceId: string
+  ) {}
+
+  public async get(profileId: string): Promise<string | undefined> {
+    return this.secrets.get(tokenSecretKey(this.workspaceId, profileId));
+  }
+
+  public async set(profileId: string, value: string): Promise<void> {
+    await this.secrets.store(tokenSecretKey(this.workspaceId, profileId), value);
+  }
+
+  public async delete(profileId: string): Promise<void> {
+    await this.secrets.delete(tokenSecretKey(this.workspaceId, profileId));
+  }
 }

@@ -13,3 +13,4 @@ coverage/
 node_modules/
 dist
 .codegraph
+.multica
